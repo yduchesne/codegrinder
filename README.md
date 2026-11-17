@@ -45,6 +45,35 @@ grind run --conf /path/to/project-agents.toml -g guide.md -r roadmap.md
 
 `run` processes the entire ordered roadmap, automatically resuming the next incomplete PR. Paths are resolved independently: `-g` / `--guide` overrides `[plan.guide].path`, while `-r` / `--roadmap` overrides `[plan.roadmap].path`. If a flag is absent, its corresponding TOML path is used; if neither is defined, `grind run` stops with an actionable error. Both CLI paths and TOML paths resolve relative to the current working directory when relative; absolute paths are used as supplied (both accept `~` expansion). The `--conf` file can be located anywhere: its directory does **not** change the base for `[plan.roadmap].path` or `[plan.guide].path`. The roadmap must use the *strict versioned Markdown format* shown in [`examples/roadmap.v1.md`](examples/roadmap.v1.md), not an unstructured prose roadmap.
 
+## Inspect configuration and workflow progress
+
+`grind explain` is read-only. It displays the resolved TOML configuration,
+per-step adapter/provider/model and reasoning level, roadmap and authoring guide
+paths (or N/A), Git checkout, CLI executable presence, logging destinations,
+and saved execution status. It shows the last PR, last step/checkpoint,
+disposition, and a conservative offline next-PR candidate.
+
+```bash
+grind explain
+grind explain --help
+grind --conf /path/to/settings.toml explain
+grind explain --conf /path/to/settings.toml -r docs/ROADMAP.v1.md -g docs/GUIDE.md
+```
+
+Just like `run`, `explain` resolves relative TOML/CLI paths against the
+current working directory. Missing optional roadmap or guide configuration
+is displayed as N/A, not an error. Unreadable or invalid roadmap/state files
+are reported diagnostically.
+
+`explain` **does not run agent preflight**, call GitHub, construct the
+orchestrator, update checkpoints, create worktrees, or create log files.
+It reads the saved `state.json` without modifying it. Current stages are
+checkpoints, **not proof that an interrupted step completed**. A saved
+`DONE` with merge evidence is marked as *saved evidence, not reverified*.
+When versioned inputs differ, saved PRs are unknown, or completion claims
+lack evidence, the next PR is reported as unavailable pending reconciliation
+rather than guessed.
+
 ## Agent configuration (`grind.toml`)
 
 Configuration discovery is explicit and predictable:

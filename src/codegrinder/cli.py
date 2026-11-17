@@ -12,6 +12,7 @@ from .engine import DefaultOrchestrator, StopWorkflow, single_runner
 from .interfaces import Orchestrator, WorkflowContext
 from .config import load_config, ConfigurationError
 from .roadmap import RoadmapFormatError
+from .diagnostics import explain
 
 
 def parser() -> argparse.ArgumentParser:
@@ -33,6 +34,16 @@ def parser() -> argparse.ArgumentParser:
                      help="Authoring guide (overrides [plan.guide] path in TOML; relative paths use CWD)")
     run.add_argument("-r", "--roadmap", type=Path, metavar="PATH",
                      help="Versioned roadmap (overrides [plan.roadmap] path in TOML; relative paths use CWD)")
+    detail = commands.add_parser(
+        "explain", help="Show read-only configuration and saved workflow status",
+        description="Report configuration and saved PR progress without executing agents or contacting GitHub.",
+    )
+    detail.add_argument("--conf", dest="explain_conf", type=Path, metavar="PATH",
+                        help="Optional TOML configuration (also accepted before explain)")
+    detail.add_argument("-g", "--guide", type=Path, metavar="PATH",
+                        help="Authoring guide path for diagnostics (overrides TOML)")
+    detail.add_argument("-r", "--roadmap", type=Path, metavar="PATH",
+                        help="Roadmap path for diagnostics (overrides TOML)")
     return root
 
 
@@ -55,11 +66,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     os.umask(0o077)
     try:
-        if args.conf is not None and args.run_conf is not None:
+        command_conf = getattr(args, f"{args.command}_conf")
+        if args.conf is not None and command_conf is not None:
             raise ConfigurationError("CONFIG_DUPLICATE: pass --conf only once")
-        configuration = load_config(args.conf if args.conf is not None else args.run_conf)
+        configuration = load_config(args.conf if args.conf is not None else command_conf)
         guide = args.guide.expanduser().resolve() if args.guide is not None else configuration.guide_path
         roadmap = args.roadmap.expanduser().resolve() if args.roadmap is not None else configuration.roadmap_path
+        if args.command == "explain":
+            try:
+                repo = _repo_root()
+            except StopWorkflow:
+                repo = None
+            location = state_directory(repo, roadmap) if repo is not None and roadmap is not None else None
+            print(explain(configuration, repo=repo, state_dir=location, roadmap=roadmap, guide=guide),
+                  end="")
+            return 0
         if guide is None:
             raise ConfigurationError("GUIDE_UNSPECIFIED: supply --guide/-g or [plan.guide] path in TOML")
         if roadmap is None:
