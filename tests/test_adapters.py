@@ -7,8 +7,7 @@ from unittest.mock import patch
 
 from codegrinder.adapters import CodexAdapter, PiAdapter
 from codegrinder.adapters.codex import CodexAdapterError
-from codegrinder.adapters.pi import PiAdapterError
-from codegrinder.interfaces import CodingTask, PlanningStep, CodingStep, ReviewStep, StructuredTask
+from codegrinder.interfaces import PlanningStep, CodingStep, ReviewStep, StructuredTask
 
 
 class TestAdapterContracts(unittest.TestCase):

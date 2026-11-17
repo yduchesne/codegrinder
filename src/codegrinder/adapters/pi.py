@@ -9,6 +9,7 @@ import subprocess
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from ..interfaces import (
     AgentExecutionError, CodingProgress, CodingResult, CodingTask, PreflightTask, PreflightResult,
@@ -143,7 +144,8 @@ class PiAdapter:
             )
         except OSError as exc:
             raise PiAdapterError("PI_LAUNCH_FAILED") from exc
-        if process.stdout is None or process.stderr is None:
+        stdout_stream, stderr_stream = process.stdout, process.stderr
+        if stdout_stream is None or stderr_stream is None:
             await _terminate_process(process)
             raise PiAdapterError("PI_MISSING_OUTPUT_STREAM")
 
@@ -223,7 +225,7 @@ class PiAdapter:
             buffer = b""
             total = 0
             while True:
-                chunk = await process.stdout.read(65536)
+                chunk = await stdout_stream.read(65536)
                 if not chunk:
                     break
                 total += len(chunk)
@@ -246,7 +248,7 @@ class PiAdapter:
         async def drain_stderr(output) -> None:
             total = 0
             while True:
-                chunk = await process.stderr.read(65536)
+                chunk = await stderr_stream.read(65536)
                 if not chunk:
                     break
                 total += len(chunk)
