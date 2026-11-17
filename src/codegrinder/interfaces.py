@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Callable, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -75,6 +75,41 @@ class StructuredTask:
 
 
 @dataclass(frozen=True)
+class CodingProgress:
+    """Sanitized, model-agnostic activity event emitted during coding."""
+
+    pr_id: str
+    phase: str
+    sequence: int
+    elapsed_seconds: float
+    event_type: str
+    tool_name: str | None = None
+
+
+@dataclass(frozen=True)
+class CodingResult:
+    """Terminal evidence for one coding invocation; the Git diff remains authoritative."""
+
+    pr_id: str
+    phase: str
+    adapter: str
+    model: str
+    status: str
+    exit_code: int
+    duration_seconds: float
+    event_count: int
+    tool_calls: int
+    failed_tools: int
+    session_id: str | None
+    stdout_path: str
+    stderr_path: str
+    progress_path: str
+
+
+ProgressCallback = Callable[[CodingProgress], None]
+
+
+@dataclass(frozen=True)
 class CodingTask:
     worktree: Path
     pr_id: str
@@ -84,6 +119,7 @@ class CodingTask:
     state_dir: Path
     fixup_number: int
     timeout_seconds: int
+    on_progress: ProgressCallback | None = None
 
 
 @runtime_checkable
@@ -96,7 +132,7 @@ class PlanningStep(PreflightCheck, Protocol):
 @runtime_checkable
 class CodingStep(PreflightCheck, Protocol):
     """Execute a frozen plan within the supplied worktree."""
-    def execute(self, task: CodingTask) -> None: ...
+    def execute(self, task: CodingTask) -> CodingResult: ...
     def identity(self) -> dict[str, str]: ...
 
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import fcntl
 import fnmatch
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -27,6 +28,8 @@ from .interfaces import (
     ReviewStep,
     StructuredTask,
     CodingTask,
+    CodingResult,
+    CodingProgress,
     WorkflowContext,
     PreflightTask,
     PreflightResult,
@@ -314,15 +317,36 @@ class DefaultOrchestrator:
             artifacts=self.artifact(pid), timeout_seconds=self.config["command_timeout_seconds"],
         ))
 
-    def _coding(self, wt: Path, pid: str, kind: str, prompt: str) -> None:
+    def _coding(self, wt: Path, pid: str, kind: str, prompt: str) -> CodingResult:
         if self.coder is None:
             raise StopWorkflow("AGENT_NOT_CONFIGURED: code")
-        self.coder.execute(CodingTask(
+
+        def progress(event: CodingProgress) -> None:
+            if not isinstance(event, CodingProgress) or event.pr_id != pid or event.phase != kind:
+                raise StopWorkflow("CODING_PROGRESS_INVALID")
+            # Never print raw tool args, model text or stderr into the run console.
+            display = f"[{pid}] {kind}: {event.event_type}"
+            if event.tool_name:
+                display += f" ({event.tool_name})"
+            print(display, flush=True)
+
+        result = self.coder.execute(CodingTask(
             worktree=wt, pr_id=pid, phase=kind, prompt=prompt,
             artifacts=self.artifact(pid), state_dir=self.state_dir,
             fixup_number=self.entry(pid)["fixups"],
             timeout_seconds=self.config["command_timeout_seconds"],
+            on_progress=progress,
         ))
+        if not isinstance(result, CodingResult):
+            raise StopWorkflow("CODING_RESULT_INVALID: adapter did not return CodingResult")
+        if (result.status != "COMPLETED" or result.exit_code != 0
+                or result.pr_id != pid or result.phase != kind
+                or result.event_count < 1):
+            raise StopWorkflow("CODING_RESULT_INVALID: failed or inconsistent terminal result")
+        ent = self.entry(pid)
+        ent.setdefault("coding_results", []).append(asdict(result))
+        self.save()  # Persist before advancing to VERIFY.
+        return result
 
     def plan(self, pr: dict, wt: Path):
         pid = pr["id"]
