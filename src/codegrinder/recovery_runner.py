@@ -145,6 +145,26 @@ class RecoveryCoordinator:
         }
         if stage not in allowed.get(previous, set()):
             self.block(pid, "RECOVERY_STAGE_CONFLICT")
+        if previous in {"PLAN", "REPLAN", "CODE", "CODE_FIXUP", "VERIFY", "REVIEW"}:
+            snapshot = self.snapshot(pid)
+            baseline = record.get("baseline")
+            if not isinstance(baseline, dict) or snapshot["head"] != baseline.get("head"):
+                self.block(pid, "RECOVERY_TRANSITION_HEAD_CHANGED")
+            if previous in {"PLAN", "REPLAN", "VERIFY", "REVIEW"} and (
+                snapshot["dirty"] != baseline.get("dirty")
+                or snapshot["fingerprint"] != baseline.get("fingerprint")
+            ):
+                self.block(pid, "RECOVERY_TRANSITION_WORKTREE_CHANGED")
+            if previous in {"CODE", "CODE_FIXUP"}:
+                from .engine import modified_paths, validate_paths, StopWorkflow
+                pr = next(item for item in self.c.config["prs"] if item["id"] == pid)
+                try:
+                    validate_paths(
+                        modified_paths(self.c.wt(pid), self.c.config["base_branch"]),
+                        pr["allowed_paths"],
+                    )
+                except StopWorkflow:
+                    self.block(pid, "RECOVERY_SCOPE_VIOLATION")
         if previous in {"PLAN", "REPLAN"}:
             filename = "plan.md" if previous == "PLAN" else f"plan-fixup-{ent['fixups']}.md"
             path = self.c.artifact(pid) / filename

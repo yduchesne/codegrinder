@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import subprocess
 import time
 from contextlib import contextmanager
@@ -330,14 +331,24 @@ async def _terminate_process(process) -> None:
     if process.returncode is not None:
         return
     try:
-        process.terminate()
+        # Pi runs in a dedicated process group, so child tools are terminated
+        # together on timeout or a failed progress callback.
+        pid = getattr(process, "pid", None)
+        if type(pid) is int and pid > 0:
+            os.killpg(pid, signal.SIGTERM)
+        else:
+            process.terminate()
     except ProcessLookupError:
         return
     try:
         await asyncio.wait_for(process.wait(), timeout=5)
     except TimeoutError:
         try:
-            process.kill()
+            pid = getattr(process, "pid", None)
+            if type(pid) is int and pid > 0:
+                os.killpg(pid, signal.SIGKILL)
+            else:
+                process.kill()
         except ProcessLookupError:
             pass
         await process.wait()
