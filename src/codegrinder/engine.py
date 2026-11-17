@@ -331,8 +331,11 @@ class DefaultOrchestrator:
     def _begin_attempt(self, pid: str, stage: str) -> dict:
         ent = self.entry(pid)
         old = ent.get("execution")
-        if isinstance(old, dict) and old.get("status") == "RUNNING":
-            raise StopWorkflow(f"UNRECONCILED_ATTEMPT: {pid}")
+        if isinstance(old, dict):
+            if old.get("status") == "RUNNING":
+                raise StopWorkflow(f"UNRECONCILED_ATTEMPT: {pid}")
+            if old.get("status") == "FAILED" and ent.get("stage") == old.get("stage"):
+                raise StopWorkflow(f"FAILED_ATTEMPT_REQUIRES_RECONCILIATION: {pid}")
         counter = ent.get("attempt_counter", 0)
         if type(counter) is not int or counter < 0:
             raise StopWorkflow("EXECUTION_COUNTER_INVALID")

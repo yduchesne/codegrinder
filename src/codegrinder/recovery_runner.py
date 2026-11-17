@@ -250,6 +250,17 @@ class RecoveryCoordinator:
             pid = pr["id"]
             ent = self.c.state["prs"].get(pid, {})
             record = ent.get("execution")
+            if record is None and ent.get("stage") in {
+                "CODE", "CODE_FIXUP", "VERIFY", "PUBLISH", "REVIEW", "REPLAN",
+            }:
+                # Old versions have no per-invocation evidence. Never execute
+                # a potentially repeated step merely because its stage exists.
+                from .engine import StopWorkflow
+                raise StopWorkflow(f"RECOVERY_LEGACY_STATE_REQUIRES_RECONCILIATION: {pid}")
+            if isinstance(record, dict) and record.get("status") == "FAILED":
+                if ent.get("stage") == record.get("stage"):
+                    from .engine import StopWorkflow
+                    raise StopWorkflow(f"RECOVERY_FAILED_ATTEMPT_REQUIRES_RECONCILIATION: {pid}")
             if not isinstance(record, dict) or record.get("status") != "RUNNING":
                 continue
             try:
