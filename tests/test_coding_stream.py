@@ -100,6 +100,34 @@ class TestPiStream(unittest.TestCase):
             (self.task.artifacts / "code-0.result.json").read_text()
         )["status"])
 
+    def test_progress_callback_runs_before_process_exits(self):
+        """An agent waiting on progress must not deadlock the adapter."""
+        gate = asyncio.Event()
+
+        class GateProcess(FakeProcess):
+            async def wait(self):
+                await asyncio.wait_for(gate.wait(), timeout=1.0)
+                self.returncode = 0
+                return 0
+
+        fake = GateProcess(good_events())
+        progress = []
+
+        def on_progress(evt):
+            progress.append(evt)
+            if evt.event_type == "tool_started":
+                gate.set()
+
+        self.task = CodingTask(
+            self.root, "PR-1", "code", "implement",
+            self.root / "artifacts", self.root / "state", 0, 3,
+            on_progress,
+        )
+        result = self.invoke(fake)
+        self.assertEqual("COMPLETED", result.status)
+        self.assertTrue(gate.is_set())
+        self.assertIn("tool_started", [e.event_type for e in progress])
+
     def test_invalid_json_nonzero_and_incomplete_fail_closed(self):
         for stdout, rc, code in (
             (b'{"type":"agent_start"}\nnot-json\n', 0, "PI_INVALID_JSONL"),

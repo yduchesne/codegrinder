@@ -110,6 +110,8 @@ class ControllerFixture(unittest.TestCase):
         self.controller._coding(self.wt, self.pid, "code", "execute")
         self.assertEqual("code", coder.execute.call_args.args[0].phase)
         self.assertEqual(0, coder.execute.call_args.args[0].fixup_number)
+        self.assertEqual(1, len(self.controller.entry(self.pid)["coding_results"]))
+        self.assertEqual("COMPLETED", self.controller.entry(self.pid)["coding_results"][0]["status"])
         self.assertIn("FROZEN PLAN", self.controller.coding_prompt(self.pr, False))
         finding = {
             "id": "F-1", "severity": "high", "file": "src/file.py",
