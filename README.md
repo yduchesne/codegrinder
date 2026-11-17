@@ -3,30 +3,34 @@
 Codegrinder is an installable Python package for executing a **versioned pull-request roadmap** through a deterministic, resumable workflow. It uses pluggable step interfaces: Codex plans, Pi codes, Codex independently reviews; the controller owns PR ordering, Git operations, CI gates, review/fixup cycles, and durable state. The framework is a **pilot**, not production-validated for unsupervised use.
 
 
-## Documentation
+## Installation from GitHub
 
-For an introduction to the internals, diagrams of the PR lifecycle, injected interfaces/adapters, persistent state, and the crash-recovery decision matrix, see [Architecture](docs/ARCHITECTURE.md). For a complete `grind.toml` reference, configuration-file discovery, and CLI path overrides/fallbacks, see [Configuration](docs/CONFIGURATION.md). For security tooling and SBOM policy, see [Security and SBOM](docs/SECURITY_AND_SBOM.md).
-
-## Installation
-
-Requires Python 3.14+ and the external `git`, `gh`, `codex`, and `pi` CLIs installed and authenticated on the machine that will execute workflows.
+Codegrinder is distributed directly from GitHub through `uv`. **No PyPI publication or registry credentials are needed.** After the current feature PR has been merged to `main`:
 
 ```bash
-./install.sh               # Installs uv (if needed), Python 3.14, and dev dependencies
-uv run grind --help
-uv run grind run --help
+uv python install 3.14
+uv tool install --python 3.14 "git+https://github.com/yduchesne/codegrinder.git@main"
+grind --help
 ```
 
-`install.sh` also installs the `grind` executable as a global uv tool, so you can
-run it from other Git repositories (ensure `~/.local/bin` is on `PATH`).
-`uv` owns the `.venv` and dependencies; `.python-version` pins the project interpreter
-to Python 3.14. When `uv` is already installed, use `uv python install 3.14`
-followed by `uv sync --group dev`. In CI, the same environment is prepared with
-`astral-sh/setup-uv` and `uv sync --group dev`. For a production deployment,
-review and commit a generated `uv.lock` to freeze dependency resolution.
+Until the feature PR is merged, install from its branch explicitly:
 
+```bash
+uv tool install --python 3.14 \
+  "git+https://github.com/yduchesne/codegrinder.git@feat/prflow-orchestrator"
+```
 
-Codegrinder runs from within the target project's Git checkout. The package can be installed once and then invoked from other repositories.
+For reproducible versions, install a **release tag after that tag has been created** (for example, `@v0.1.0`). A Git-tag install is preferred for ordinary users; `@main` is for following development. `uv` installs the `grind` CLI in an isolated tool environment. Ensure the tool executable directory reported by `uv tool dir --bin` is on `PATH`.
+
+Codegrinder requires Python 3.14+ and, for actual workflow execution, independently installed and authenticated `git`, `gh`, `codex`, and `pi` CLIs. An installation does **not** set up external agents or their credentials. The existing `./install.sh` is for contributors building from a source checkout (development dependencies, pre-commit, and an editable tool install), **not** for ordinary users. Workflows are run from the target project's Git checkout.
+
+## Documentation
+
+- [Installation](docs/INSTALLATION.md) — prerequisites, GitHub branch/tag installation, verification, upgrades, uninstall, and contributor setup
+- [Releasing](docs/RELEASING.md) — maintainer versioning, CI gates, Git-tag release procedure, and rollback policy
+- [Architecture](docs/ARCHITECTURE.md) — interfaces, agent adapters, lifecycle diagrams, durable state, and crash-recovery decision matrix
+- [Configuration](docs/CONFIGURATION.md) — `grind.toml`, defaults, path resolution, CLI overrides, and logging
+- [Security and SBOM](docs/SECURITY_AND_SBOM.md) — development checks and supply-chain controls
 
 ## CLI
 
