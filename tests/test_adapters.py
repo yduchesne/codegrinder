@@ -83,6 +83,7 @@ class TestAdapterContracts(unittest.TestCase):
             events = "\n".join([
                 json.dumps({"type": "message_end", "message": {
                     "role": "assistant", "stopReason": "stop",
+                    "provider": "example-provider", "model": "model-x",
                     "content": [{"type": "text", "text": "CODEGRINDER_PREFLIGHT_OK"}],
                 }}),
                 json.dumps({"type": "agent_settled", "aborted": False}),
@@ -103,6 +104,23 @@ class TestAdapterContracts(unittest.TestCase):
             self.assertIn("--no-tools", invocations[1])
             self.assertIn("example-provider", invocations[1])
             self.assertIn("model-x", invocations[1])
+
+    def test_pi_preflight_rejects_fuzzy_model_substitution(self):
+        from codegrinder.interfaces import PreflightTask
+        with tempfile.TemporaryDirectory() as tmp:
+            task = PreflightTask(Path(tmp), "code", 30)
+            auth = subprocess.CompletedProcess([], 0, "", "")
+            wrong = subprocess.CompletedProcess([], 0, "\n".join([
+                json.dumps({"type": "message_end", "message": {
+                    "role": "assistant", "stopReason": "stop",
+                    "provider": "example-provider", "model": "different-model",
+                    "content": [{"type": "text", "text": "CODEGRINDER_PREFLIGHT_OK"}],
+                }}),
+                json.dumps({"type": "agent_settled", "aborted": False}),
+            ]), "")
+            with patch("codegrinder.adapters.pi.subprocess.run", side_effect=[auth, wrong]):
+                result = PiAdapter(provider="example-provider", model="model-x").preflight(task)
+            self.assertEqual("MODEL_SELECTION_MISMATCH", result.code)
 
     def test_pi_preflight_rejects_bad_auth_and_invalid_model_result(self):
         from codegrinder.interfaces import PreflightTask

@@ -101,6 +101,11 @@ class PiAdapter:
                 for item in assistant.get("content", [])
             ):
                 return PreflightResult.failed("MODEL_PROBE_UNVERIFIED")
+            # Pi permits fuzzy --model matching. Verify which provider/model
+            # actually answered, rather than accepting a different selection.
+            if (assistant.get("provider") != self.provider
+                    or assistant.get("model") != self.model):
+                return PreflightResult.failed("MODEL_SELECTION_MISMATCH")
         except (PiAdapterError, ValueError, TypeError, AttributeError):
             return PreflightResult.failed("MODEL_PROBE_INVALID_OUTPUT")
         return PreflightResult.passed()

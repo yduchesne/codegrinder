@@ -160,9 +160,12 @@ ephemeral model request** using the exact model and reasoning effort configured
 for that phase. The Pi adapter checks `pi auth check` with the exact configured
 provider and model, then sends a minimal **no-tools, no-session JSONL** request
 using the configured model and thinking level. Both adapters verify actual model
-responses; listing models or inspecting local credentials alone does not prove
-that a model can answer. No fallback model, provider-specific Codegrinder logic,
-credential collection or raw CLI authentication-output logging is allowed.
+responses; because Pi's CLI can resolve fuzzy model names, its preflight also
+compares the response's actual provider/model fields against the configured IDs
+and rejects substitutions. Listing models or inspecting local credentials alone
+does not prove that a model can answer. No fallback model, provider-specific
+Codegrinder logic, credential collection or raw CLI authentication-output
+logging is allowed.
 
 Preflights use the current harness's configured credentials and consume a
 small number of model tokens. A successful preflight is not a guarantee against
