@@ -63,6 +63,5 @@ Desktop.ini
 codegrinder-state/
 *.egg-info/
 
-# Local Codegrinder configuration (may include private endpoints / credentials)
-grind.toml
-!grind.toml.example
+# Per-project grind.toml is intentionally NOT ignored: it only contains
+# nonsecret adapter/model selections and may be committed for reproducibility.

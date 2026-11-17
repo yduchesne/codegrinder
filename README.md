@@ -64,7 +64,7 @@ reasoning_effort = "high"
 
 Any missing section or setting inherits the defaults. The Codex CLI model ID for **GPT-6 Sol** is `gpt-6-sol`, *not* `gpt-6`; DeepSeek's current Flash API model ID is `deepseek-flash` (not the compatibility alias `deepseek-v4-flash`). Pi selects the model via its own `--provider` and `--model` options. You must ensure that **your installed, authenticated Codex and Pi harnesses expose these exact model IDs**; configurations must use IDs valid for the selected harness, not display names. Codegrinder checks identifier syntax and passes exact IDs to the relevant CLI, stopping on an invocation error. It cannot infer account-specific model entitlements and will never replace an unavailable model with another one automatically. Use `pi --list-models` and Codex's model picker to check local availability before your first run.
 
-Only `codex` is supported for planning/review and `pi` for coding in this first version. Protocols allow additional adapters without redesigning the controller. `grind.toml` is ignored by Git; the tracked `.example` is the public configuration template. Store API credentials in the harnesses' own authenticated mechanisms, **not** in the TOML file.
+Only `codex` is supported for planning/review and `pi` for coding in this first version. Protocols allow additional adapters without redesigning the controller. `grind.toml` may be committed to each target repository to version the agent selections; the tracked `.example` is the public configuration template. Store API credentials in the harnesses' own authenticated mechanisms, **not** in the TOML file.
 
 ## Steps and contracts
 
