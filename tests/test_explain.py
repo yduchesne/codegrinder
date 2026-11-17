@@ -12,8 +12,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codegrinder import cli
-from codegrinder.config import load_config
-from codegrinder.diagnostics import explain
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "roadmap.v1.md"
 
