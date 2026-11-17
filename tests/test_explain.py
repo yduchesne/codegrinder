@@ -107,7 +107,7 @@ class TestExplain(unittest.TestCase):
         self.assertIn("Last step: REVIEW", data)
         self.assertIn("Last stage: REVIEW", data)
         self.assertIn("Last disposition: INCOMPLETE", data)
-        self.assertIn("Next PR: PR-002 (offline candidate", data)
+        self.assertIn("Next PR: PR-002 (LEGACY_CHECKPOINT_UNSAFE", data)
         self.assertIn(f"State file: {self.state / 'state.json'}", data)
         self.assertIn("State file status: PRESENT", data)
         self.assertEqual(before, (self.state / "state.json").read_bytes())
