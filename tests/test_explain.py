@@ -164,6 +164,34 @@ class TestExplain(unittest.TestCase):
         self.assertIn("Input consistency: CHANGED (roadmap)", self.run_explain())
         self.assertIn("Next PR: N/A (state reconciliation required)", self.run_explain())
 
+    def test_explain_includes_execution_recovery_checkpoint(self):
+        self.saved({
+            "PR-001": {
+                "stage": "CODE",
+                "execution": {
+                    "id": "PR-001-00000004", "pr_id": "PR-001", "stage": "CODE",
+                    "status": "RUNNING", "started_at": "2026-11-17T00:00:00Z",
+                    "baseline": {"head": "abc", "dirty": True, "fingerprint": "hash"},
+                    "launch_state": "LAUNCHED", "process": None,
+                    "recovery": {"decision": "MANUAL_REQUIRED",
+                                 "reason": "RECOVERY_CODING_PROCESS_UNKNOWN"},
+                },
+            },
+        })
+        diagnostic = self.run_explain()
+        self.assertIn("Attempt: PR-001-00000004", diagnostic)
+        self.assertIn("Attempt step: CODE", diagnostic)
+        self.assertIn("Execution status: RUNNING", diagnostic)
+        self.assertIn("Recovery disposition: MANUAL_REQUIRED", diagnostic)
+        self.assertIn("Can resume: NO", diagnostic)
+        self.assertIn("Next PR: PR-001 (RECOVERY_BLOCKED", diagnostic)
+
+    def test_legacy_in_progress_checkpoint_requires_manual_recovery(self):
+        self.saved({"PR-001": {"stage": "CODE"}})
+        diagnostic = self.run_explain()
+        self.assertIn("Execution status: UNKNOWN (legacy checkpoint)", diagnostic)
+        self.assertIn("Next PR: PR-001 (LEGACY_CHECKPOINT_UNSAFE", diagnostic)
+
     def test_invalid_state_is_reported_not_overwritten(self):
         self.state.mkdir(exist_ok=True)
         path = self.state / "state.json"

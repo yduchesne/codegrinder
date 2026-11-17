@@ -15,6 +15,7 @@ from .config import GrindConfig
 from .engine import StopWorkflow, validate_roadmap
 from .roadmap import RoadmapFormatError, parse_roadmap
 from .selection import PRSelectionError, SequentialPRSelector, is_completed
+from .recovery import process_status
 
 MAX_STATE_BYTES = 16 * 1024 * 1024
 
@@ -122,6 +123,16 @@ def _offline_next(prs: list[dict], entries: dict) -> str:
     if selected is None:
         return "N/A (roadmap completed in saved state; merges not rechecked)"
     pid = selected["id"]
+    record = entries.get(pid, {}).get("execution")
+    if isinstance(record, dict) and record.get("status") == "RUNNING":
+        decision = record.get("recovery") or {}
+        if isinstance(decision, dict) and decision.get("decision") == "MANUAL_REQUIRED":
+            return f"{pid} (RECOVERY_BLOCKED; manual intervention required)"
+        return f"{pid} (RECOVERY_PENDING; run must reconcile attempt)"
+    if record is None and entries.get(pid, {}).get("stage") in {
+        "CODE", "CODE_FIXUP", "VERIFY", "PUBLISH", "REVIEW", "REPLAN",
+    }:
+        return f"{pid} (LEGACY_CHECKPOINT_UNSAFE; manual reconciliation required)"
     if entries.get(pid, {}).get("stage") == "STOPPED":
         return f"{pid} (STOPPED; manual reconciliation required)"
     return f"{pid} (offline candidate; GitHub not queried)"
@@ -214,6 +225,37 @@ def explain(
         f"  Last stage: {last_stage}",
         f"  Last disposition: {outcome}",
     ])
+    if last_id != "N/A":
+        entry = entries.get(last_id, {})
+        record = entry.get("execution")
+        if isinstance(record, dict):
+            status = record.get("status")
+            recovery = record.get("recovery") or {}
+            decision = recovery.get("decision", "N/A") if isinstance(recovery, dict) else "N/A"
+            lines.extend([
+                f"  Attempt: {record.get('id', 'UNKNOWN')}",
+                f"  Attempt step: {record.get('stage', 'UNKNOWN')}",
+                f"  Execution status: {status or 'UNKNOWN'}",
+                f"  Recovery disposition: {decision}",
+            ])
+            if status == "RUNNING":
+                identity = record.get("process")
+                observed = process_status(identity) if identity else "NOT_RECORDED"
+                lines.append(f"  Previous process: {observed}")
+                lines.append("  Can resume: NO (reconcile interrupted attempt first)")
+            elif status == "FAILED":
+                lines.append("  Can resume: NO (failed attempt needs reconciliation)")
+            elif decision == "MANUAL_REQUIRED":
+                lines.append("  Can resume: NO (manual recovery required)")
+            else:
+                lines.append("  Can resume: subject to normal preflight and merge checks")
+        elif entry.get("stage") in {
+            "CODE", "CODE_FIXUP", "VERIFY", "PUBLISH", "REVIEW", "REPLAN",
+        }:
+            lines.extend([
+                "  Execution status: UNKNOWN (legacy checkpoint)",
+                "  Can resume: NO (missing execution journal)",
+            ])
     if state is not None:
         extra = set(entries) - {pr["id"] for pr in prs}
         if extra:

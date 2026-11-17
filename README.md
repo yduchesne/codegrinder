@@ -178,6 +178,55 @@ entry point, Ruff, mypy, and coverage enforcement. The `pytest` configuration
 fails the build whenever total Codegrinder source coverage falls below 85%.
  Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.
 
+## Crash recovery and execution checkpoints
+
+Each workflow stage now creates a durable, uniquely identified attempt entry
+**before preparing the worktree or invoking an agent**. The execution journal is
+stored under `<state-dir>/attempts/<PR-ID>/<attempt-id>.json`, with a current
+attempt mirrored in `state.json`. Writes use atomic replacement and fsync of
+both the JSON file and its directory. The journal includes the PR, stage,
+attempt ID, start/finish time, baseline Git HEAD, a worktree fingerprint of
+tracked/staged/untracked changes, process identity when known, and normalized
+coding result evidence. It does not store secrets or model-generated text.
+
+On restart, Codegrinder reconciles every saved `RUNNING` attempt before
+agent preflight, GitHub merge reconciliation, or selecting another PR:
+
+- Previous process still alive or PID identity uncertain → **STOP**; never
+  launch a concurrent worker. Linux process identity uses boot ID and
+  process-start ticks to guard against PID reuse, including surviving process
+  groups.
+- Successful, correctly identified Pi result recorded in the attempt journal
+  or written to an attempt-unique result artifact → validate the model,
+  attempt ID, repository HEAD and allowed paths, then continue at `VERIFY`.
+- Pi exited without a valid result but left in-scope partial edits → retain
+  the edits and invoke mandatory `REPLAN` using review-style recovery
+  observations. The planner must produce a new validated correction plan
+  before coding can resume. Unknown process ownership or edits outside
+  permitted paths → **STOP**.
+- No Pi edits after the process launched, but no trusted terminal result →
+  **STOP**, because external side effects cannot be ruled out.
+- Interrupted read-only planning/review, or unchanged deterministic
+  verification → safely retry only after validating process exit and the
+  unchanged worktree. Previously committed state transitions are reconciled
+  using the frozen plan or other stage-specific evidence.
+- Interrupted publish → only adopt a GitHub-confirmed PR at the expected
+  branch, base, and HEAD; never blindly create a duplicate PR.
+- A legacy unfinished checkpoint with no attempt journal → **STOP** for
+  explicit migration rather than guessing whether the step ran.
+
+`grind explain` reports the attempt identifier, saved execution status,
+recovery disposition, previous process status when known and whether an
+unresolved attempt blocks resumption. It remains read-only and does not
+repair state itself.
+
+**Safety boundary:** recovery prevents speculative invocation of uncertain
+non-idempotent work; it does not claim exactly-once execution of arbitrary
+external agent side effects. A process that escapes its tracked process group
+or a corrupted local evidence store may require manual investigation.
+Tests use synthetic crash windows and mocked agents/GitHub calls, not
+live authenticated agent sessions.
+
 ## Streaming coding execution and structured results
 
 `CodingStep.execute(CodingTask)` returns an immutable `CodingResult`
