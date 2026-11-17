@@ -316,6 +316,79 @@ class DefaultOrchestrator:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _attempt_path(self, pid: str, attempt_id: str) -> Path:
+        return self.state_dir / "attempts" / pid / (attempt_id + ".json")
+
+    def _save_attempt(self, pid: str) -> None:
+        ent = self.entry(pid)
+        record = ent.get("execution")
+        if not isinstance(record, dict):
+            raise StopWorkflow("EXECUTION_RECORD_MISSING")
+        self.save()  # state.json is authoritative; audit journal may lag on crash
+        atomic_json(self._attempt_path(pid, record["id"]), record)
+
+    def _begin_attempt(self, pid: str, stage: str) -> dict:
+        ent = self.entry(pid)
+        old = ent.get("execution")
+        if isinstance(old, dict) and old.get("status") == "RUNNING":
+            raise StopWorkflow(f"UNRECONCILED_ATTEMPT: {pid}")
+        counter = ent.get("attempt_counter", 0)
+        if type(counter) is not int or counter < 0:
+            raise StopWorkflow("EXECUTION_COUNTER_INVALID")
+        counter += 1
+        record = {
+            "id": f"{pid}-{counter:08d}", "pr_id": pid, "stage": stage,
+            "status": "RUNNING", "started_at": utcnow(), "baseline": None,
+            "launch_state": "NOT_STARTED", "process": None, "result": None,
+            "recovery": None,
+        }
+        ent["attempt_counter"] = counter
+        ent["execution"] = record
+        self._save_attempt(pid)
+        self.logs.emit("ATTEMPT_START", pr_id=pid, step=stage, state=stage,
+                       disposition="STARTED")
+        return record
+
+    def _update_attempt(self, pid: str, **fields) -> None:
+        record = self.entry(pid).get("execution")
+        if not isinstance(record, dict) or record.get("status") != "RUNNING":
+            raise StopWorkflow("ATTEMPT_NOT_RUNNING")
+        record.update(fields)
+        self._save_attempt(pid)
+
+    def _finish_attempt(self, pid: str, status: str, reason: str = "") -> None:
+        if status not in ("SUCCEEDED", "FAILED", "INTERRUPTED", "RECOVERED"):
+            raise StopWorkflow("ATTEMPT_TERMINAL_INVALID")
+        record = self.entry(pid).get("execution")
+        if not isinstance(record, dict) or record.get("status") != "RUNNING":
+            raise StopWorkflow("ATTEMPT_NOT_RUNNING")
+        record["status"] = status
+        record["finished_at"] = utcnow()
+        record["stage_after"] = self.entry(pid)["stage"]
+        if reason:
+            record["reason_code"] = reason
+        self._save_attempt(pid)
+        self.logs.emit("ATTEMPT_FINISH", pr_id=pid, step=record["stage"],
+                       state=record["stage_after"], disposition=status,
+                       level="ERROR" if status == "FAILED" else "INFO")
+
+    def _capture_baseline(self, pid: str, wt: Path) -> None:
+        # Real worktrees have a .git file; simple unit fakes may not.
+        if (wt / ".git").exists():
+            try:
+                baseline = worktree_snapshot(wt, git)
+            except RecoveryError as exc:
+                raise StopWorkflow(str(exc)) from exc
+            self._update_attempt(pid, baseline=baseline, worktree=str(wt))
+
+    def _coding_started(self, pid: str, process_pid: int) -> None:
+        record = self.entry(pid).get("execution")
+        if isinstance(record, dict) and record.get("status") == "RUNNING":
+            self._update_attempt(
+                pid, launch_state="LAUNCHED",
+                process=process_identity(process_pid),
+            )
+
     def prepare(self, pid: str):
         branch = f"prflow/{pid}"
         wt = self.wt(pid)
@@ -366,6 +439,13 @@ class DefaultOrchestrator:
             self.logs.emit("CODING_PROGRESS", pr_id=pid, step=kind,
                            state=self.entry(pid)["stage"], disposition=event.event_type)
 
+        attempt = self.entry(pid).get("execution")
+        attempt_id = ""
+        callback = None
+        if isinstance(attempt, dict) and attempt.get("status") == "RUNNING":
+            attempt_id = attempt["id"]
+            self._update_attempt(pid, launch_state="LAUNCHING")
+            callback = lambda child_pid: self._coding_started(pid, child_pid)
         self.logs.emit("STEP_START", pr_id=pid, step=kind,
                        state=self.entry(pid)["stage"], disposition="STARTED")
         started = time.monotonic()
@@ -375,17 +455,24 @@ class DefaultOrchestrator:
                 artifacts=self.artifact(pid), state_dir=self.state_dir,
                 fixup_number=self.entry(pid)["fixups"],
                 timeout_seconds=self.config["command_timeout_seconds"],
-                on_progress=progress,
+                on_progress=progress, attempt_id=attempt_id,
+                on_process_started=callback,
             ))
             if not isinstance(result, CodingResult):
                 raise StopWorkflow("CODING_RESULT_INVALID: adapter did not return CodingResult")
             if (result.status != "COMPLETED" or result.exit_code != 0
                     or result.pr_id != pid or result.phase != kind
-                    or result.event_count < 1):
+                    or result.event_count < 1 or (
+                        result.attempt_id is not None
+                        and result.attempt_id != attempt_id
+                    )):
                 raise StopWorkflow("CODING_RESULT_INVALID: failed or inconsistent terminal result")
             ent = self.entry(pid)
             ent.setdefault("coding_results", []).append(asdict(result))
-            self.save()  # Persist before advancing to VERIFY.
+            if attempt_id:
+                self._update_attempt(pid, result=asdict(result))
+            else:
+                self.save()  # Persist before advancing to VERIFY.
         except Exception as exc:
             self.logs.emit("STEP_FINISH", pr_id=pid, step=kind,
                            state=self.entry(pid)["stage"], disposition="FAILED",
@@ -688,10 +775,8 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             print(f"[{pid}] Waiting for required CI: " + repr({k: names.get(k) for k in required}))
         return False
 
-    def advance(self, pr: dict):
+    def _advance_stage(self, pr: dict, wt: Path, branch: str, stage: str):
         pid = pr["id"]
-        wt, branch = self.prepare(pid)
-        stage = self.entry(pid)["stage"]
         if stage == "PLAN":
             self.plan(pr, wt)
         elif stage == "CODE":
@@ -719,6 +804,25 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
         else:
             raise StopWorkflow("UNKNOWN_STAGE: " + stage)
         return True
+
+    def advance(self, pr: dict):
+        """Journal the invocation before preparing or invoking a non-idempotent step."""
+        pid = pr["id"]
+        stage = self.entry(pid)["stage"]
+        if stage in ("DONE", "STOPPED"):
+            return False
+        self._begin_attempt(pid, stage)
+        try:
+            wt, branch = self.prepare(pid)
+            self._capture_baseline(pid, wt)
+            moved = self._advance_stage(pr, wt, branch, stage)
+        except Exception as exc:
+            self._finish_attempt(pid, "FAILED", safe_error_code(exc))
+            raise
+        # A hard kill / KeyboardInterrupt does not enter this path: RUNNING
+        # persists and must be explicitly reconciled on a future invocation.
+        self._finish_attempt(pid, "SUCCEEDED")
+        return moved
 
     def next_pr(self) -> dict | None:
         """Delegate deterministic selection to the injected PRSelector."""
