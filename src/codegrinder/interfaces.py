@@ -75,6 +75,8 @@ class StructuredTask:
     schema: Path
     artifacts: Path
     timeout_seconds: int
+    attempt_id: str = ""
+    on_process_started: ProcessCallback | None = None
 
 
 @dataclass(frozen=True)

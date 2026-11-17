@@ -76,9 +76,36 @@ class CodexAdapter:
             "--sandbox", "read-only", "--output-schema", str(task.schema),
             "-o", str(output), "-",
         ]
-        completed = subprocess.run(args, cwd=task.worktree, input=task.prompt,
-                                   capture_output=True, text=True,
-                                   timeout=task.timeout_seconds, check=False)
+        if task.on_process_started is None:
+            completed = subprocess.run(
+                args, cwd=task.worktree, input=task.prompt,
+                capture_output=True, text=True,
+                timeout=task.timeout_seconds, check=False,
+            )
+        else:
+            # Spawn with a dedicated session so restart detection can also
+            # account for surviving subprocess-group descendants.
+            process = subprocess.Popen(
+                args, cwd=task.worktree, stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, start_new_session=True,
+            )
+            try:
+                task.on_process_started(process.pid)
+                stdout, stderr = process.communicate(
+                    input=task.prompt, timeout=task.timeout_seconds,
+                )
+            except BaseException:
+                process.terminate()
+                try:
+                    process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                raise
+            completed = subprocess.CompletedProcess(
+                args, process.returncode, stdout, stderr,
+            )
         (task.artifacts / (task.phase + ".stdout")).write_text(completed.stdout, encoding="utf-8")
         (task.artifacts / (task.phase + ".stderr")).write_text(completed.stderr, encoding="utf-8")
         if completed.returncode:

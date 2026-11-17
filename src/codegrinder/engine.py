@@ -413,10 +413,18 @@ class DefaultOrchestrator:
         self.logs.emit("STEP_START", pr_id=pid, step=kind, state=state,
                        disposition="STARTED")
         started = time.monotonic()
+        attempt = self.entry(pid).get("execution")
+        attempt_id = ""
+        on_process_started = None
+        if isinstance(attempt, dict) and attempt.get("status") == "RUNNING":
+            attempt_id = attempt["id"]
+            self._update_attempt(pid, launch_state="LAUNCHING")
+            on_process_started = lambda child_pid: self._coding_started(pid, child_pid)
         try:
             result = adapter.execute(StructuredTask(
                 worktree=wt, pr_id=pid, phase=kind, prompt=prompt, schema=schema,
                 artifacts=self.artifact(pid), timeout_seconds=self.config["command_timeout_seconds"],
+                attempt_id=attempt_id, on_process_started=on_process_started,
             ))
         except Exception as exc:
             self.logs.emit("STEP_FINISH", pr_id=pid, step=kind,
