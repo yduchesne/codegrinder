@@ -833,6 +833,10 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
 
     def run(self) -> int:
         """Preflight agents, reconcile the roadmap, and run with lifecycle logs."""
+        if self.logs.closed:
+            # Each run() invocation receives its own timestamped log files,
+            # including a same-process retry after an earlier stop.
+            self.logs = WorkflowEventLogger(self.state_dir, self.context.logging)
         self.logs.emit("WORKFLOW_START", state="PREFLIGHT", disposition="STARTED")
         try:
             try:

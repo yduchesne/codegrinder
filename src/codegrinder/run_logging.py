@@ -146,6 +146,10 @@ class WorkflowEventLogger:
         logger = self._get(pr_id)
         logger.log(getattr(logging, level), fields)
 
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     def close(self) -> None:
         if self._closed:
             return
