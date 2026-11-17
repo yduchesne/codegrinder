@@ -107,8 +107,10 @@ class CodingResult:
     stdout_path: str
     stderr_path: str
     progress_path: str
+    attempt_id: str | None = None
 
 
+ProcessCallback = Callable[[int], None]
 ProgressCallback = Callable[[CodingProgress], None]
 
 
@@ -123,6 +125,8 @@ class CodingTask:
     fixup_number: int
     timeout_seconds: int
     on_progress: ProgressCallback | None = None
+    attempt_id: str = ""
+    on_process_started: ProcessCallback | None = None
 
 
 @runtime_checkable

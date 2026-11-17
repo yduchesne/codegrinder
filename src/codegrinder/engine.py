@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ from .interfaces import (
     PreflightResult,
 )
 from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
+from .recovery import RecoveryError, process_identity, process_status, worktree_snapshot, file_digest
 
 ROOT = Path(__file__).resolve().parent
 STAGES = {
@@ -53,10 +55,23 @@ def utcnow():
 
 
 def atomic_json(path: Path, value: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    """Crash-durable atomic JSON: private file, fsync, replace, parent fsync."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        with tmp.open("x", encoding="utf-8") as output:
+            os.chmod(tmp, 0o600)
+            output.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def load_json(path: Path):

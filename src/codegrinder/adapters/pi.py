@@ -128,6 +128,8 @@ class PiAdapter:
         session_dir = task.state_dir / "pi-sessions" / task.pr_id
         session_dir.mkdir(parents=True, exist_ok=True)
         name = f"{task.phase}-{task.fixup_number}"
+        if task.attempt_id:
+            name += f"-{task.attempt_id}"
         stdout_path = task.artifacts / f"{name}.stdout"
         stderr_path = task.artifacts / f"{name}.stderr"
         progress_path = task.artifacts / f"{name}.progress.jsonl"
@@ -141,9 +143,16 @@ class PiAdapter:
             process = await asyncio.create_subprocess_exec(
                 *args, cwd=str(task.worktree),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
             )
         except OSError as exc:
             raise PiAdapterError("PI_LAUNCH_FAILED") from exc
+        try:
+            if task.on_process_started is not None and type(process.pid) is int:
+                task.on_process_started(process.pid)
+        except BaseException:
+            await _terminate_process(process)
+            raise
         stdout_stream, stderr_stream = process.stdout, process.stderr
         if stdout_stream is None or stderr_stream is None:
             await _terminate_process(process)
@@ -299,13 +308,12 @@ class PiAdapter:
             event_count=event_count, tool_calls=tool_calls,
             failed_tools=failed_tools, session_id=session_id,
             stdout_path=str(stdout_path), stderr_path=str(stderr_path),
-            progress_path=str(progress_path),
+            progress_path=str(progress_path), attempt_id=task.attempt_id or None,
         )
-        result_path.write_text(
-            json.dumps(asdict(result), sort_keys=True, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        result_path.chmod(0o600)
+        with _private_binary(result_path) as handle:
+            handle.write((json.dumps(asdict(result), sort_keys=True, indent=2) + "\n").encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
         return result
 
 
