@@ -68,13 +68,19 @@ def _last_checkpoint(prs: list[dict], entries: dict) -> tuple[str, str, str, str
 
     def last_activity(item: tuple[str, dict]) -> tuple[str, int]:
         pid, entry = item
+        dates = []
         history = entry.get("history")
         if isinstance(history, list):
-            for event in reversed(history):
-                if isinstance(event, dict) and isinstance(event.get("at"), str):
-                    # All controller history dates are UTC ISO-8601.
-                    return event["at"], order[pid]
-        return "", order[pid]
+            dates.extend(event["at"] for event in history
+                         if isinstance(event, dict) and isinstance(event.get("at"), str))
+        attempt = entry.get("execution")
+        if isinstance(attempt, dict):
+            for key in ("started_at", "finished_at"):
+                if isinstance(attempt.get(key), str):
+                    dates.append(attempt[key])
+        # Input timestamps originate from the controller's UTC ISO-8601 clock.
+        # Do not infer completion from their ordering.
+        return max(dates, default=""), order[pid]
 
     pid, entry = max(known, key=last_activity)
     stage = entry.get("stage")

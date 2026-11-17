@@ -38,6 +38,12 @@ def worktree_snapshot(worktree: Path, git_fn: Callable) -> dict:
         if name.startswith("/") or ".." in Path(name).parts or "\0" in name:
             raise RecoveryError("RECOVERY_UNSAFE_PATH")
         path = worktree / name
+        # Parent symlinks must never let a recovery fingerprint read outside
+        # its worktree, even when the final path component is regular.
+        try:
+            path.resolve(strict=False).relative_to(worktree.resolve(strict=True))
+        except (OSError, ValueError):
+            raise RecoveryError("RECOVERY_PATH_ESCAPES_WORKTREE") from None
         digest.update(name.encode("utf-8", errors="surrogateescape") + b"\0")
         try:
             metadata = path.lstat()

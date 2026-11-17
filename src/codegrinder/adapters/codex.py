@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 
@@ -96,11 +98,19 @@ class CodexAdapter:
                     input=task.prompt, timeout=task.timeout_seconds,
                 )
             except BaseException:
-                process.terminate()
+                # CLI workers execute inside a dedicated process session.
+                # Terminate child tools as well as the harness itself.
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
                 try:
                     process.communicate(timeout=3)
                 except subprocess.TimeoutExpired:
-                    process.kill()
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
                     process.communicate()
                 raise
             completed = subprocess.CompletedProcess(

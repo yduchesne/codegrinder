@@ -60,8 +60,8 @@ def atomic_json(path: Path, value: dict):
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
     try:
-        with tmp.open("x", encoding="utf-8") as output:
-            os.chmod(tmp, 0o600)
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as output:
             output.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
             output.flush()
             os.fsync(output.fileno())
