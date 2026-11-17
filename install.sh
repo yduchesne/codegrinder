@@ -31,5 +31,9 @@ cd "${project_dir}"
 uv --version
 uv python install 3.14
 uv sync --group dev
+# Register pre-commit; Gitleaks requires Go >=1.24.11 when the hook initializes.
+uv run --no-sync pre-commit install
 uv tool install --python 3.14 --editable "${project_dir}"
 printf '\nCodegrinder is ready. Usage:\n  grind --help  (ensure ~/.local/bin is on PATH)\n  uv run grind --help\n  uv run grind run --help\n'
+
+printf "Security hooks: Go >=1.24.11 is required to bootstrap the pinned Gitleaks pre-commit hook.\n"

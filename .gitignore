@@ -66,3 +66,7 @@ codegrinder-state/
 
 # Per-project grind.toml is intentionally NOT ignored: it only contains
 # nonsecret adapter/model selections and may be committed for reproducibility.
+
+# Reproducibly generated SBOMs and local scan outputs (CI uploads artifacts)
+.artifacts/
+.semgrep/

@@ -20,6 +20,10 @@ dev = [
     "pytest-cov>=6.2",
     "ruff>=0.13",
     "mypy>=1.18",
+    "pre-commit==4.7.0",
+    "bandit==1.9.4",
+    "semgrep==1.185.0",
+    "cyclonedx-bom==8.0.1",
 ]
 
 [tool.setuptools.packages.find]

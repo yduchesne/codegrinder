@@ -44,7 +44,8 @@ class TestAdapterContracts(unittest.TestCase):
             task = StructuredTask(root, 'P', 'plan', 'prompt', root / 'schema.json', root, 10)
             (root / 'plan.json').write_text('{"status":"READY"}')
             with patch('codegrinder.adapters.codex.subprocess.run', return_value=subprocess.CompletedProcess([], 1, '', 'failed')):
-                with self.assertRaises(CodexAdapterError): CodexAdapter().execute(task)
+                with self.assertRaises(CodexAdapterError):
+                    CodexAdapter().execute(task)
             self.assertFalse((root / 'plan.json').exists())
 
     def test_pi_invocation_uses_flash_high_and_settled_event(self):
@@ -66,7 +67,9 @@ class TestAdapterContracts(unittest.TestCase):
             task = CodingTask(root, 'PR1', 'code', 'implement', root, root / 'state', 0, 10)
             events = json.dumps({'type': 'agent_settled', 'aborted': True})
             with patch('codegrinder.adapters.pi.subprocess.run', return_value=subprocess.CompletedProcess([], 0, events, '')):
-                with self.assertRaises(PiAdapterError): PiAdapter().execute(task)
+                with self.assertRaises(PiAdapterError):
+                    PiAdapter().execute(task)
 
 
-if __name__ == '__main__': unittest.main()
+if __name__ == '__main__':
+    unittest.main()

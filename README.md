@@ -120,3 +120,21 @@ GitHub Actions runs under Python 3.14, verifying the installed `grind`
 entry point, Ruff, mypy, and coverage enforcement. The `pytest` configuration
 fails the build whenever total Codegrinder source coverage falls below 85%.
  Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.
+
+## Pre-commit security policy and CycloneDX SBOM
+
+Run `uv run --no-sync pre-commit run --all-files` to execute Ruff, mypy, Bandit,
+Semgrep (vendored rules), Gitleaks (official pinned hook), and CycloneDX SBOM
+generation/schema validation. The first Gitleaks hook installation needs
+Go 1.24.11 or newer. CI also scans the entire Git history for secrets, enforces
+85% unit-test coverage, and uploads the validated runtime SBOM as an artifact.
+
+The SBOM is generated from `uv.lock` using a locked, production-only export:
+
+```bash
+uv lock # commit uv.lock alongside dependency changes
+uv run --no-sync python scripts/sbom.py generate --output .artifacts/sbom/codegrinder.cdx.json
+uv run --no-sync python scripts/sbom.py validate --input .artifacts/sbom/codegrinder.cdx.json
+```
+
+See [docs/SECURITY_AND_SBOM.md](docs/SECURITY_AND_SBOM.md) for the full policy.

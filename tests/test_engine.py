@@ -24,21 +24,25 @@ class TestRoadmap(unittest.TestCase):
     def test_dependency_must_be_earlier(self):
         cfg = sample()
         cfg["prs"][0]["depends_on"] = ["p2"]
-        with self.assertRaises(StopWorkflow): validate_roadmap(cfg)
+        with self.assertRaises(StopWorkflow):
+            validate_roadmap(cfg)
 
     def test_duplicate_id(self):
         cfg = sample()
         cfg["prs"][1]["id"] = "p1"
-        with self.assertRaises(StopWorkflow): validate_roadmap(cfg)
+        with self.assertRaises(StopWorkflow):
+            validate_roadmap(cfg)
 
     def test_scope_fail_closed(self):
         validate_paths({"src/app.py"}, ["src/**"])
-        with self.assertRaises(StopWorkflow): validate_paths({"src/app.py", ".github/workflows/ci.yml"}, ["src/**"])
+        with self.assertRaises(StopWorkflow):
+            validate_paths({"src/app.py", ".github/workflows/ci.yml"}, ["src/**"])
 
     def test_plan_headings(self):
         plan = "## Scope\n" + "x" * 300 + "\n## Steps\n## Tests\n## Decision Matrix\n## Stop Conditions"
         self.assertEqual(plan, validate_plan({"status": "READY", "plan_markdown": plan}))
-        with self.assertRaises(StopWorkflow): validate_plan({"status": "BLOCKED", "blocker": "missing interface"})
+        with self.assertRaises(StopWorkflow):
+            validate_plan({"status": "BLOCKED", "blocker": "missing interface"})
 
     def test_review_mismatch(self):
         self.assertEqual(("PASS", []), validate_review({"verdict": "PASS", "findings": [], "summary": "fine"}))
@@ -52,7 +56,8 @@ class TestRoadmap(unittest.TestCase):
                                     json.dumps({"type": "agent_settled", "aborted": False})]))
             check_pi_events(p)
             p.write_text(json.dumps({"type": "agent_settled", "aborted": True}))
-            with self.assertRaises(StopWorkflow): check_pi_events(p)
+            with self.assertRaises(StopWorkflow):
+                check_pi_events(p)
 
     def test_atomic_state(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -60,4 +65,5 @@ class TestRoadmap(unittest.TestCase):
             atomic_json(p, {"x": 1})
             self.assertEqual({"x": 1}, json.loads(p.read_text()))
 
-if __name__ == "__main__": unittest.main()
+if __name__ == "__main__":
+    unittest.main()
