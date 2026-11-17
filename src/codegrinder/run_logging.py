@@ -46,7 +46,9 @@ class LoggingSettings:
 
 
 class _UTCFormatter(logging.Formatter):
-    converter = time.gmtime
+    @staticmethod
+    def converter(timestamp: float | None = None) -> time.struct_time:
+        return time.gmtime(timestamp)
 
 
 def _token(value: object) -> str:
