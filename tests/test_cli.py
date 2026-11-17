@@ -14,6 +14,22 @@ SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "roadmap.v1.md"
 
 
 class TestCli(unittest.TestCase):
+    def test_state_directory_id_is_stable_lowercase_hex_without_spaces(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "My Project"
+            roadmap = root / "Plan With Spaces.md"
+            alternate_roadmap = root / "another-plan.md"
+            state_home = root / "local state"
+            with patch.dict(os.environ, {"XDG_STATE_HOME": str(state_home)}):
+                state = cli.state_directory(repo, roadmap)
+                self.assertEqual(state, cli.state_directory(repo, roadmap))
+                self.assertEqual(state.parent, state_home / "codegrinder")
+                self.assertRegex(state.name, r"^[0-9a-f]{20}$")
+                self.assertNotIn(" ", state.name)
+                self.assertNotEqual(state, cli.state_directory(repo, alternate_roadmap))
+                self.assertNotEqual(state, cli.state_directory(root / "Other Project", roadmap))
+
     def test_root_help_lists_run(self):
         with self.assertRaises(SystemExit) as result, contextlib.redirect_stdout(io.StringIO()) as out:
             cli.parser().parse_args(["--help"])
