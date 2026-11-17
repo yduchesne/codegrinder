@@ -43,7 +43,8 @@ class TestExplain(unittest.TestCase):
         self.addCleanup(os.chdir, self.previous_cwd)
 
     def saved(self, entries: dict, *, changes: dict | None = None):
-        digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()
+        def digest(p: Path) -> str:
+            return hashlib.sha256(p.read_bytes()).hexdigest()
         payload = {
             "roadmap_sha256": digest(self.roadmap),
             "guide_sha256": digest(self.guide),
