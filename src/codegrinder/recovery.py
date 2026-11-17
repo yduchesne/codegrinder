@@ -87,7 +87,15 @@ def process_status(identity: object) -> str:
     try:
         stat_path = Path(f"/proc/{pid}/stat")
         if not stat_path.exists():
-            return "EXITED"
+            # A child may outlive its session leader. Pi starts a new
+            # process session/group; never resume while that group survives.
+            try:
+                os.killpg(pid, 0)
+            except ProcessLookupError:
+                return "EXITED"
+            except (PermissionError, OSError):
+                return "UNKNOWN"
+            return "ACTIVE"
         current = process_identity(pid)
     except (OSError, ValueError):
         return "UNKNOWN"

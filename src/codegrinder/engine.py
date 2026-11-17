@@ -37,7 +37,8 @@ from .interfaces import (
     PreflightResult,
 )
 from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
-from .recovery import RecoveryError, process_identity, process_status, worktree_snapshot, file_digest
+from .recovery import RecoveryError, process_identity, worktree_snapshot
+from .recovery_runner import RecoveryCoordinator
 
 ROOT = Path(__file__).resolve().parent
 STAGES = {
@@ -824,6 +825,10 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
         self._finish_attempt(pid, "SUCCEEDED")
         return moved
 
+    def recover_interrupted(self) -> None:
+        """Resolve incomplete executions before any PR step or model preflight."""
+        RecoveryCoordinator(self).reconcile()
+
     def next_pr(self) -> dict | None:
         """Delegate deterministic selection to the injected PRSelector."""
         try:
@@ -959,6 +964,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
         self.logs.emit("WORKFLOW_START", state="PREFLIGHT", disposition="STARTED")
         try:
             try:
+                self.recover_interrupted()
                 self.preflight()
                 self.reconcile_completed()
             except (StopWorkflow, AgentExecutionError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
@@ -977,6 +983,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             self.logs.close()
 
     def process(self, *, once=False, follow=False, wait_seconds=30, max_wait_minutes=None):
+        self.recover_interrupted()  # also enforced for direct engine callers
         current = None
         wait_started = None
         while True:

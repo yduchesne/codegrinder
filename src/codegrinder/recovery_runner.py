@@ -8,12 +8,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from pathlib import Path
 from typing import Any
 
 from .interfaces import CodingResult
 from .recovery import RecoveryError, process_status, validate_attempt, worktree_snapshot
-from .run_logging import safe_error_code
 
 
 class RecoveryCoordinator:
@@ -122,12 +120,11 @@ class RecoveryCoordinator:
         self.c.transition(pid, "REVIEW", "recovered confirmed published PR")
 
     def _changed_stage(self, pid: str, record: dict, stage: str) -> None:
-        from .engine import validate_plan
         ent = self.c.entry(pid)
         previous = record["stage"]
         allowed = {
             "PLAN": {"CODE"}, "REPLAN": {"CODE_FIXUP"},
-            "CODE": {"VERIFY"}, "CODE_FIXUP": {"VERIFY"},
+            "CODE": {"VERIFY", "REPLAN"}, "CODE_FIXUP": {"VERIFY", "REPLAN"},
             "VERIFY": {"PUBLISH", "REPLAN"},
             "PUBLISH": {"REVIEW"}, "REVIEW": {"WAIT_MERGE", "REPLAN"},
             "WAIT_MERGE": {"DONE"},
@@ -149,8 +146,11 @@ class RecoveryCoordinator:
             ):
                 self.block(pid, "RECOVERY_PLAN_EVIDENCE_INVALID")
         if previous in {"CODE", "CODE_FIXUP"}:
-            if self.completed_coding(pid, record) is None:
-                self.block(pid, "RECOVERY_CODING_EVIDENCE_MISSING")
+            if stage == "VERIFY":
+                if self.completed_coding(pid, record) is None:
+                    self.block(pid, "RECOVERY_CODING_EVIDENCE_MISSING")
+            elif not ent.get("active_feedback"):
+                self.block(pid, "RECOVERY_CONTINUATION_FEEDBACK_MISSING")
         if previous == "PUBLISH":
             if not ent.get("pr_number") or not ent.get("published_head"):
                 self.block(pid, "RECOVERY_PUBLISH_EVIDENCE_MISSING")
@@ -212,7 +212,6 @@ class RecoveryCoordinator:
                 )
             except StopWorkflow:
                 self.block(pid, "RECOVERY_SCOPE_VIOLATION")
-            self.resolved(pid, "PARTIAL_CODING_REPLAN", retry=True)
             self.c._start_replan(
                 pid, source="interrupted_coding",
                 summary=f"Interrupted {original} attempt {record['id']}; partial edits preserved",
@@ -224,6 +223,7 @@ class RecoveryCoordinator:
                                     "continuation plan, with tests and stop conditions.",
                 }],
             )
+            self.resolved(pid, "PARTIAL_CODING_REPLAN", retry=False)
             return
         if original in {"PLAN", "REPLAN", "REVIEW", "VERIFY"}:
             if (current["fingerprint"] != baseline.get("fingerprint")
@@ -258,10 +258,12 @@ class RecoveryCoordinator:
                 self.block(pid, str(exc))
             path = self.c._attempt_path(pid, record["id"])
             try:
-                if (not path.is_file() or not isinstance(
-                    json.loads(path.read_text(encoding="utf-8")), dict
-                )):
+                if not path.is_file():
                     self.block(pid, "RECOVERY_AUDIT_MISSING")
+                audited = json.loads(path.read_text(encoding="utf-8"))
+                if (not isinstance(audited, dict) or audited.get("id") != record["id"]
+                        or audited.get("stage") != record["stage"]):
+                    self.block(pid, "RECOVERY_AUDIT_MISMATCH")
             except (OSError, ValueError, TypeError):
                 self.block(pid, "RECOVERY_AUDIT_UNREADABLE")
             process = record.get("process")
