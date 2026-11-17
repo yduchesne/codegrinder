@@ -56,7 +56,7 @@ class FakeCoder:
             from codegrinder.interfaces import CodingProgress
             task.on_progress(CodingProgress(task.pr_id, task.phase, 1, 0.0, "tool_finished", "edit"))
         return CodingResult(task.pr_id, task.phase, "fake", "fake-model", "COMPLETED",
-                            0, 0.0, 4, 1, 0, None, "", "", "")
+                            0, 0.0, 4, 1, 0, None, "", "", "", task.attempt_id or None)
 
 
 class FakeReviewer:

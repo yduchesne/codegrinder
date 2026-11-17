@@ -479,7 +479,7 @@ class DefaultOrchestrator:
             if (result.status != "COMPLETED" or result.exit_code != 0
                     or result.pr_id != pid or result.phase != kind
                     or result.event_count < 1 or (
-                        result.attempt_id is not None
+                        bool(attempt_id)
                         and result.attempt_id != attempt_id
                     )):
                 raise StopWorkflow("CODING_RESULT_INVALID: failed or inconsistent terminal result")
