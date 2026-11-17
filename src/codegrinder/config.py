@@ -35,6 +35,8 @@ class GrindConfig:
     plan: dict[str, str]
     code: dict[str, str]
     review: dict[str, str]
+    roadmap_path: Path | None
+    guide_path: Path | None
 
     def adapters(self) -> tuple[PlanningStep, CodingStep, ReviewStep]:
         """Construct phase adapters; the orchestration engine remains vendor-neutral."""
@@ -69,8 +71,29 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             raise ConfigurationError(f"CONFIG_INVALID: cannot parse TOML {source}: {exc}") from exc
         source_path = source
-    if set(data) - {"steps"}:
-        raise ConfigurationError(f"CONFIG_INVALID: unknown top-level keys: {sorted(set(data) - {'steps'})}")
+    allowed_top_level = {"steps", "plan"}
+    if set(data) - allowed_top_level:
+        raise ConfigurationError(f"CONFIG_INVALID: unknown top-level keys: {sorted(set(data) - allowed_top_level)}")
+    plan_files = data.get("plan", {})
+    if not isinstance(plan_files, dict):
+        raise ConfigurationError("CONFIG_INVALID: plan must be a TOML table")
+    if set(plan_files) - {"roadmap", "guide"}:
+        raise ConfigurationError(f"CONFIG_INVALID: unknown plan settings: {sorted(set(plan_files) - {'roadmap', 'guide'})}")
+
+    def plan_path(name: str) -> Path | None:
+        entry = plan_files.get(name)
+        if entry is None:
+            return None
+        if not isinstance(entry, dict) or set(entry) != {"path"}:
+            raise ConfigurationError(f"CONFIG_INVALID: plan.{name} must contain only a path string")
+        value = _nonempty_str(entry["path"], f"plan.{name}.path")
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = working_dir / candidate
+        return candidate.resolve()
+
+    roadmap_path = plan_path("roadmap")
+    guide_path = plan_path("guide")
     steps = data.get("steps", {})
     if not isinstance(steps, dict):
         raise ConfigurationError("CONFIG_INVALID: steps must be a TOML table")
@@ -103,4 +126,5 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
         source=source_path,
         sha256=hashlib.sha256(raw).hexdigest() if raw is not None else None,
         plan=resolved["plan"], code=resolved["code"], review=resolved["review"],
+        roadmap_path=roadmap_path, guide_path=guide_path,
     )

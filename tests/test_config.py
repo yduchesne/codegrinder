@@ -57,6 +57,52 @@ class TestConfig(unittest.TestCase):
                 with self.assertRaises(ConfigurationError):
                     load_config(cwd=Path(d))
 
+
+    def test_plan_paths_relative_to_cwd_not_config_location(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_dir = root / "elsewhere"
+            config_dir.mkdir()
+            config = config_dir / "custom.toml"
+            config.write_text('[plan.roadmap]\npath="docs/roadmap.md"\n[plan.guide]\npath="docs/guide.md"\n')
+            loaded = load_config(config, cwd=root)
+            self.assertEqual((root / "docs/roadmap.md").resolve(), loaded.roadmap_path)
+            self.assertEqual((root / "docs/guide.md").resolve(), loaded.guide_path)
+
+    def test_absolute_plan_paths_are_preserved(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_dir = root / "configuration"
+            config_dir.mkdir()
+            roadmap = root / "roadmap.md"
+            guide = root / "guide.md"
+            config = config_dir / "settings.toml"
+            config.write_text(f'[plan.roadmap]\npath="{roadmap}"\n[plan.guide]\npath="{guide}"\n')
+            loaded = load_config(config, cwd=root / "another-directory")
+            self.assertEqual(roadmap.resolve(), loaded.roadmap_path)
+            self.assertEqual(guide.resolve(), loaded.guide_path)
+
+    def test_plan_path_entries_optional(self):
+        with tempfile.TemporaryDirectory() as d:
+            loaded = load_config(cwd=Path(d))
+            self.assertIsNone(loaded.roadmap_path)
+            self.assertIsNone(loaded.guide_path)
+
+    def test_plan_paths_strict_validation(self):
+        samples = (
+            '[plan.guide]\nlocation="guide.md"\n',
+            '[plan.roadmap]\npath=""\n',
+            '[plan.roadmap]\npath=42\n',
+            '[plan.guide]\npath="guide.md"\nother="ignored"\n',
+            '[plan.other]\npath="unexpected"\n',
+            'plan="wrong"\n',
+        )
+        for content in samples:
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as d:
+                Path(d, "grind.toml").write_text(content)
+                with self.assertRaisesRegex(ConfigurationError, "CONFIG_INVALID"):
+                    load_config(cwd=Path(d))
+
     def test_bad_toml_fails(self):
         with tempfile.TemporaryDirectory() as d:
             Path(d, "grind.toml").write_text('[steps.plan\n')

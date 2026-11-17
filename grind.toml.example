@@ -1,4 +1,13 @@
 # Copy this file to grind.toml in the working directory, or pass --conf PATH.
+# Both CLI flags and these TOML entries resolve relative paths against CWD.
+# Absolute paths are used directly regardless of the config file location.
+# -g/--guide and -r/--roadmap override only their matching entry.
+[plan.roadmap]
+path = "docs/ROADMAP.v1.md"
+
+[plan.guide]
+path = "docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md"
+
 # Unspecified steps use the defaults below. All model IDs must be valid for
 # the selected agent's own model catalog; Codegrinder never auto-substitutes.
 

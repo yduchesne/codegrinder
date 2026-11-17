@@ -28,10 +28,10 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--conf", dest="run_conf", type=Path, metavar="PATH",
                      help="Optional TOML configuration (also accepted before run)")
-    run.add_argument("-g", "--guide", type=Path, required=True, metavar="PATH",
-                     help="Detailed PR plan authoring guide (Markdown, absolute or relative to CWD)")
-    run.add_argument("-r", "--roadmap", type=Path, required=True, metavar="PATH",
-                     help="Versioned PR roadmap (Markdown, absolute or relative to CWD)")
+    run.add_argument("-g", "--guide", type=Path, metavar="PATH",
+                     help="Authoring guide (overrides [plan.guide] path in TOML; relative paths use CWD)")
+    run.add_argument("-r", "--roadmap", type=Path, metavar="PATH",
+                     help="Versioned roadmap (overrides [plan.roadmap] path in TOML; relative paths use CWD)")
     return root
 
 
@@ -54,15 +54,20 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     os.umask(0o077)
     try:
-        repo = _repo_root()
-        guide, roadmap = args.guide.expanduser().resolve(), args.roadmap.expanduser().resolve()
+        if args.conf is not None and args.run_conf is not None:
+            raise ConfigurationError("CONFIG_DUPLICATE: pass --conf only once")
+        configuration = load_config(args.conf if args.conf is not None else args.run_conf)
+        guide = args.guide.expanduser().resolve() if args.guide is not None else configuration.guide_path
+        roadmap = args.roadmap.expanduser().resolve() if args.roadmap is not None else configuration.roadmap_path
+        if guide is None:
+            raise ConfigurationError("GUIDE_UNSPECIFIED: supply --guide/-g or [plan.guide] path in TOML")
+        if roadmap is None:
+            raise ConfigurationError("ROADMAP_UNSPECIFIED: supply --roadmap/-r or [plan.roadmap] path in TOML")
         if not guide.is_file():
             raise StopWorkflow(f"GUIDE_MISSING: {guide}")
         if not roadmap.is_file():
             raise StopWorkflow(f"ROADMAP_MISSING: {roadmap}")
-        if args.conf is not None and args.run_conf is not None:
-            raise ConfigurationError("CONFIG_DUPLICATE: pass --conf only once")
-        configuration = load_config(args.conf if args.conf is not None else args.run_conf)
+        repo = _repo_root()
         planner, coder, reviewer = configuration.adapters()
         state_dir = state_directory(repo, roadmap)
         with single_runner(state_dir):

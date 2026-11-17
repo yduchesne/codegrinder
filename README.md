@@ -20,9 +20,11 @@ Codegrinder runs from within the target project's Git checkout. The package can 
 grind --help                 # Root help and command hierarchy
 grind run --help             # Run-specific flags and help
 
+grind run                         # Use [plan.guide] / [plan.roadmap] in ./grind.toml
+
 grind run \
   --guide docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md \
-  --roadmap docs/ROADMAP.v1.md
+  --roadmap docs/ROADMAP.v1.md     # Both explicit paths override TOML
 
 grind --conf /path/to/project-agents.toml run \
   -g docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md \
@@ -32,7 +34,7 @@ grind --conf /path/to/project-agents.toml run \
 grind run --conf /path/to/project-agents.toml -g guide.md -r roadmap.md
 ```
 
-`run` processes the entire ordered roadmap, automatically resuming the next incomplete PR. `-g` / `--guide` and `-r` / `--roadmap` are required. Both paths resolve relative to the current working directory (unless absolute). The roadmap must use the *strict versioned Markdown format* shown in [`examples/roadmap.v1.md`](examples/roadmap.v1.md), not an unstructured prose roadmap.
+`run` processes the entire ordered roadmap, automatically resuming the next incomplete PR. Paths are resolved independently: `-g` / `--guide` overrides `[plan.guide].path`, while `-r` / `--roadmap` overrides `[plan.roadmap].path`. If a flag is absent, its corresponding TOML path is used; if neither is defined, `grind run` stops with an actionable error. Both CLI paths and TOML paths resolve relative to the current working directory when relative; absolute paths are used as supplied (both accept `~` expansion). The `--conf` file can be located anywhere: its directory does **not** change the base for `[plan.roadmap].path` or `[plan.guide].path`. The roadmap must use the *strict versioned Markdown format* shown in [`examples/roadmap.v1.md`](examples/roadmap.v1.md), not an unstructured prose roadmap.
 
 ## Agent configuration (`grind.toml`)
 
@@ -45,6 +47,12 @@ Configuration discovery is explicit and predictable:
 See the checked-in [`grind.toml.example`](grind.toml.example). Copy it to your working directory to customize:
 
 ```toml
+[plan.roadmap]
+path = "docs/ROADMAP.v1.md"
+
+[plan.guide]
+path = "docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md"
+
 [steps.plan]
 adapter = "codex"
 model = "gpt-6-sol"
@@ -62,7 +70,7 @@ model = "gpt-6-sol"
 reasoning_effort = "high"
 ```
 
-Any missing section or setting inherits the defaults. The Codex CLI model ID for **GPT-6 Sol** is `gpt-6-sol`, *not* `gpt-6`; DeepSeek's current Flash API model ID is `deepseek-flash` (not the compatibility alias `deepseek-v4-flash`). Pi selects the model via its own `--provider` and `--model` options. You must ensure that **your installed, authenticated Codex and Pi harnesses expose these exact model IDs**; configurations must use IDs valid for the selected harness, not display names. Codegrinder checks identifier syntax and passes exact IDs to the relevant CLI, stopping on an invocation error. It cannot infer account-specific model entitlements and will never replace an unavailable model with another one automatically. Use `pi --list-models` and Codex's model picker to check local availability before your first run.
+Step adapter settings inherit the defaults when omitted. `plan.roadmap` and `plan.guide` have no built-in path defaults: if absent, their paths must be supplied on the CLI. A configured table must have exactly one string key, `path`; nonexistent files are rejected when selected for execution. A CLI override does not require the overridden TOML path to exist. The Codex CLI model ID for **GPT-6 Sol** is `gpt-6-sol`, *not* `gpt-6`; DeepSeek's current Flash API model ID is `deepseek-flash` (not the compatibility alias `deepseek-v4-flash`). Pi selects the model via its own `--provider` and `--model` options. You must ensure that **your installed, authenticated Codex and Pi harnesses expose these exact model IDs**; configurations must use IDs valid for the selected harness, not display names. Codegrinder checks identifier syntax and passes exact IDs to the relevant CLI, stopping on an invocation error. It cannot infer account-specific model entitlements and will never replace an unavailable model with another one automatically. Use `pi --list-models` and Codex's model picker to check local availability before your first run.
 
 Only `codex` is supported for planning/review and `pi` for coding in this first version. Protocols allow additional adapters without redesigning the controller. `grind.toml` may be committed to each target repository to version the agent selections; the tracked `.example` is the public configuration template. Store API credentials in the harnesses' own authenticated mechanisms, **not** in the TOML file.
 

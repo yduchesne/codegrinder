@@ -40,11 +40,13 @@ class TestCli(unittest.TestCase):
             parsed = cli.parser().parse_args(args)
             self.assertEqual(Path("example.toml"), parsed.conf or parsed.run_conf)
 
-    def test_required_args(self):
-        with contextlib.redirect_stderr(io.StringIO()):
-            with self.assertRaises(SystemExit) as caught:
-                cli.parser().parse_args(["run", "-r", "roadmap.md"])
-        self.assertEqual(2, caught.exception.code)
+    def test_guide_and_roadmap_flags_optional(self):
+        args = cli.parser().parse_args(["run"])
+        self.assertIsNone(args.guide)
+        self.assertIsNone(args.roadmap)
+        args = cli.parser().parse_args(["run", "-r", "roadmap.md"])
+        self.assertEqual(Path("roadmap.md"), args.roadmap)
+        self.assertIsNone(args.guide)
 
     def test_unknown_subcommand(self):
         with contextlib.redirect_stderr(io.StringIO()):
@@ -62,6 +64,77 @@ class TestCli(unittest.TestCase):
                 result = cli.main(["run", "-g", str(guide), "-r", str(SAMPLE)])
                 self.assertEqual(0, result)
                 controller.return_value.process.assert_called_once_with(follow=True, max_wait_minutes=None)
+
+
+    def test_toml_paths_use_cwd_even_when_config_elsewhere(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "configuration").mkdir()
+            guide = root / "guide.md"
+            roadmap = root / "roadmap.md"
+            guide.write_text("Authoring guide")
+            roadmap.write_text(SAMPLE.read_text())
+            config = root / "configuration" / "settings.toml"
+            config.write_text('[plan.guide]\npath="guide.md"\n[plan.roadmap]\npath="roadmap.md"\n')
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                with (patch.object(cli, "_repo_root", return_value=root),
+                      patch.object(cli, "state_directory", return_value=root / "state"),
+                      patch.object(cli, "Controller") as controller):
+                    controller.return_value.process.return_value = 0
+                    self.assertEqual(0, cli.main(["--conf", str(config), "run"]))
+                    self.assertEqual(roadmap.resolve(), controller.call_args.args[1])
+                    self.assertEqual(guide.resolve(), controller.call_args.args[3])
+            finally:
+                os.chdir(old_cwd)
+
+    def test_each_flag_overrides_only_matching_toml_entry(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            config_dir = root / "configuration"
+            config_dir.mkdir()
+            guide = root / "guide.md"
+            roadmap = root / "roadmap.md"
+            other_guide = root / "other-guide.md"
+            other_roadmap = root / "other-roadmap.md"
+            guide.write_text("Authoring guide")
+            roadmap.write_text(SAMPLE.read_text())
+            other_guide.write_text("Alternate guide")
+            other_roadmap.write_text(SAMPLE.read_text())
+            config = config_dir / "settings.toml"
+            config.write_text('[plan.guide]\npath="guide.md"\n[plan.roadmap]\npath="roadmap.md"\n')
+            cases = [
+                (["-g", "other-guide.md"], roadmap, other_guide),
+                (["-r", "other-roadmap.md"], other_roadmap, guide),
+                (["-g", str(other_guide), "-r", str(other_roadmap)], other_roadmap, other_guide),
+            ]
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                for opts, expected_roadmap, expected_guide in cases:
+                    with self.subTest(opts=opts), (
+                        patch.object(cli, "_repo_root", return_value=root),
+                        patch.object(cli, "state_directory", return_value=root / "state"),
+                        patch.object(cli, "Controller") as controller,
+                    ):
+                        controller.return_value.process.return_value = 0
+                        self.assertEqual(0, cli.main(["run", "--conf", str(config), *opts]))
+                        self.assertEqual(expected_roadmap.resolve(), controller.call_args.args[1])
+                        self.assertEqual(expected_guide.resolve(), controller.call_args.args[3])
+            finally:
+                os.chdir(old_cwd)
+
+    def test_missing_unconfigured_paths_fail_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(d)
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    self.assertEqual(2, cli.main(["run"]))
+                self.assertIn("GUIDE_UNSPECIFIED", err.getvalue())
+            finally:
+                os.chdir(old_cwd)
 
     def test_config_change_prohibits_resume(self):
         with tempfile.TemporaryDirectory() as tmp:
