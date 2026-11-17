@@ -254,5 +254,159 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual("UNKNOWN", process_status({"pid": 1}))
 
 
+    def test_interrupted_preparation_without_launched_worker_can_retry(self):
+        self.worker._begin_attempt(self.pid, "PLAN")
+        resumed = self.resumed()
+        resumed.recover_interrupted()
+        rec = resumed.entry(self.pid)["execution"]
+        self.assertEqual("INTERRUPTED", rec["status"])
+        self.assertEqual("PREPARATION_RETRY", rec["recovery"]["decision"])
+
+    def test_missing_process_identity_after_launch_blocks(self):
+        record = self.begin("CODE")
+        record["launch_state"] = "LAUNCHING"
+        self.worker._save_attempt(self.pid)
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_CODING_PROCESS_UNKNOWN"):
+            self.reconcile(resumed)
+        self.coder.execute.assert_not_called()
+
+    def test_changed_files_outside_allowed_scope_block_replan(self):
+        self.begin(launched=True)
+        resumed = self.resumed()
+        with patch("codegrinder.recovery_runner.process_status", return_value="EXITED"), \
+             patch("codegrinder.recovery_runner.worktree_snapshot", return_value=EDITED), \
+             patch.object(engine, "modified_paths", return_value={"secrets/outside.py"}):
+            with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_SCOPE_VIOLATION"):
+                resumed.recover_interrupted()
+        self.assertEqual("CODE", resumed.entry(self.pid)["stage"])
+
+    def test_tampered_journal_blocks_without_invocation(self):
+        rec = self.begin(launched=True)
+        self.worker._attempt_path(self.pid, rec["id"]).unlink()
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_AUDIT_MISSING"):
+            self.reconcile(resumed)
+        self.coder.execute.assert_not_called()
+
+    def test_read_only_worktree_change_blocks_retry(self):
+        self.begin("PLAN", launched=True)
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_WORKTREE_CHANGED"):
+            self.reconcile(resumed, snapshot=EDITED)
+
+    def test_review_with_dirty_worktree_is_not_replayed(self):
+        self.begin("REVIEW", launched=True)
+        resumed = self.resumed()
+        baseline = dict(BASELINE, dirty=True)
+        rec = resumed.entry(self.pid)["execution"]
+        rec["baseline"] = baseline
+        resumed._save_attempt(self.pid)
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_READONLY_STEP_DIRTY"):
+            self.reconcile(resumed, snapshot=baseline)
+
+    def test_interrupted_verification_can_repeat_unchanged_deterministic_checks(self):
+        self.begin("VERIFY")
+        resumed = self.resumed()
+        self.reconcile(resumed, snapshot=dict(BASELINE))
+        self.assertEqual("VERIFY", resumed.entry(self.pid)["stage"])
+        self.assertEqual("SAFE_STEP_RETRY", resumed.entry(self.pid)["execution"]["recovery"]["decision"])
+
+    def test_partially_modified_fixup_returns_to_planning_again(self):
+        self.worker.entry(self.pid)["fixups"] = 1
+        self.worker.entry(self.pid)["active_plan"] = "plan-fixup-1.md"
+        self.begin("CODE_FIXUP", launched=True)
+        resumed = self.resumed()
+        self.reconcile(resumed)
+        ent = resumed.entry(self.pid)
+        self.assertEqual("REPLAN", ent["stage"])
+        self.assertEqual(2, ent["fixups"])
+        self.assertEqual("interrupted_coding", json.loads(
+            (resumed.artifact(self.pid) / "feedback-2.json").read_text()
+        )["source"])
+
+    def test_replan_with_preexisting_partial_edits_can_be_retried(self):
+        self.begin("REPLAN", launched=True)
+        rec = self.worker.entry(self.pid)["execution"]
+        rec["baseline"] = dict(EDITED)
+        self.worker._save_attempt(self.pid)
+        resumed = self.resumed()
+        self.reconcile(resumed, snapshot=dict(EDITED))
+        self.assertEqual("REPLAN", resumed.entry(self.pid)["stage"])
+        self.assertEqual("SAFE_STEP_RETRY", resumed.entry(self.pid)["execution"]["recovery"]["decision"])
+
+    def test_saved_attempt_coding_result_is_recovered(self):
+        rec = self.begin(launched=True)
+        rec["result"] = asdict(self.coding_result(rec["id"]))
+        self.worker._save_attempt(self.pid)
+        resumed = self.resumed()
+        self.reconcile(resumed)
+        self.assertEqual("VERIFY", resumed.entry(self.pid)["stage"])
+        self.coder.execute.assert_not_called()
+
+    def test_malformed_attempt_scoped_result_is_rejected(self):
+        rec = self.begin(launched=True)
+        path = self.worker.artifact(self.pid) / f"code-0-{rec['id']}.result.json"
+        path.write_text("{malformed")
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_RESULT_INVALID"):
+            self.reconcile(resumed)
+
+    def test_recover_saved_plan_transition_without_new_agent(self):
+        rec = self.begin("PLAN", launched=True)
+        artifact = self.worker.artifact(self.pid) / "plan.md"
+        artifact.write_text(
+            "## Scope\n" + "Explanation. " * 30
+            + "\n## Steps\n## Tests\n## Decision Matrix\n## Stop Conditions\n"
+        )
+        entry = self.worker.entry(self.pid)
+        entry["stage"] = "CODE"
+        entry["active_plan"] = "plan.md"
+        self.worker.save()
+        resumed = self.resumed()
+        self.reconcile(resumed, snapshot=dict(BASELINE))
+        self.assertEqual("RECOVERED", resumed.entry(self.pid)["execution"]["status"])
+        self.assertEqual("COMMITTED_TRANSITION_RECONCILED",
+                         resumed.entry(self.pid)["execution"]["recovery"]["decision"])
+        self.coder.execute.assert_not_called()
+
+    def test_recover_saved_review_pass_without_second_review(self):
+        self.begin("REVIEW", launched=True)
+        entry = self.worker.entry(self.pid)
+        entry["stage"] = "WAIT_MERGE"
+        entry["accepted_head"] = "abc123"
+        self.worker.save()
+        resumed = self.resumed()
+        self.reconcile(resumed, snapshot=dict(BASELINE))
+        self.assertEqual("RECOVERED", resumed.entry(self.pid)["execution"]["status"])
+        self.assertEqual("WAIT_MERGE", resumed.entry(self.pid)["stage"])
+
+    def test_recover_published_stage_with_saved_evidence_and_remote_match(self):
+        self.begin("PUBLISH")
+        entry = self.worker.entry(self.pid)
+        entry.update({
+            "stage": "REVIEW", "pr_number": 42,
+            "published_head": "abc123", "pr_url": "https://example.invalid/42",
+        })
+        self.worker.save()
+        resumed = self.resumed()
+        evidence = {"number": 42, "headRefOid": "abc123", "baseRefName": "main"}
+        with patch("codegrinder.recovery_runner.process_status", return_value="EXITED"), \
+             patch.object(engine, "run", return_value=subprocess.CompletedProcess(
+                 [], 0, json.dumps(evidence), ""
+             )):
+            resumed.recover_interrupted()
+        self.assertEqual("RECOVERED", resumed.entry(self.pid)["execution"]["status"])
+
+    def test_failed_unresolved_attempt_cannot_be_restarted(self):
+        record = self.begin("CODE")
+        record["status"] = "FAILED"
+        self.worker._save_attempt(self.pid)
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_FAILED_ATTEMPT"):
+            resumed.recover_interrupted()
+
+
+
 if __name__ == "__main__":
     unittest.main()
