@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "base_branch": "main",
+  "planning_guide": "docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md",
+  "pi_model": "deepseek/deepseek-v4-pro",
+  "command_timeout_seconds": 3600,
+  "max_fixups": 2,
+  "merge_mode": "manual",
+  "required_checks": ["REPLACE-WITH-REQUIRED-GITHUB-CHECK-NAME"],
+  "prs": [
+    {
+      "id": "PR-001",
+      "title": "Replace with first real PR title",
+      "goal": "Replace with frozen design outcome for PR one",
+      "depends_on": [],
+      "acceptance": ["Replace with independently verifiable acceptance requirement"],
+      "allowed_paths": ["src/**", "tests/**", "docs/**"],
+      "checks": ["REPLACE_WITH_REAL_PROJECT_TEST_COMMAND"]
+    },
+    {
+      "id": "PR-002",
+      "title": "Replace with second real PR title",
+      "goal": "Replace with frozen design outcome for PR two",
+      "depends_on": ["PR-001"],
+      "acceptance": ["Replace with independently verifiable acceptance requirement"],
+      "allowed_paths": ["src/**", "tests/**", "docs/**"],
+      "checks": ["REPLACE_WITH_REAL_PROJECT_TEST_COMMAND"]
+    }
+  ]
+}
