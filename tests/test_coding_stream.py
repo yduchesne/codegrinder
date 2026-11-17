@@ -128,6 +128,23 @@ class TestPiStream(unittest.TestCase):
         self.assertTrue(gate.is_set())
         self.assertIn("tool_started", [e.event_type for e in progress])
 
+    def test_unique_attempt_result_and_process_callback(self):
+        from codegrinder.interfaces import CodingTask
+        seen = []
+        fake = FakeProcess(good_events())
+        fake.pid = 987654
+        self.task = CodingTask(
+            self.root, "PR-1", "code", "implement",
+            self.root / "artifacts", self.root / "state", 0, 5,
+            self.events.append, "PR-1-00000008", seen.append,
+        )
+        result = self.invoke(fake)
+        self.assertEqual("PR-1-00000008", result.attempt_id)
+        self.assertEqual([987654], seen)
+        path = self.task.artifacts / "code-0-PR-1-00000008.result.json"
+        self.assertTrue(path.is_file())
+        self.assertEqual(result.attempt_id, json.loads(path.read_text())["attempt_id"])
+
     def test_invalid_json_nonzero_and_incomplete_fail_closed(self):
         for stdout, rc, code in (
             (b'{"type":"agent_start"}\nnot-json\n', 0, "PI_INVALID_JSONL"),

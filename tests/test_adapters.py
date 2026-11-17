@@ -138,6 +138,63 @@ class TestAdapterContracts(unittest.TestCase):
             with patch("codegrinder.adapters.pi.subprocess.run", side_effect=FileNotFoundError()):
                 self.assertEqual("HARNESS_NOT_INSTALLED", PiAdapter().preflight(task).code)
 
+    def test_codex_records_child_pid_and_uses_isolated_process_session(self):
+        from codegrinder.interfaces import StructuredTask
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            output = root / "plan.json"
+            seen = []
+            class FakeProcess:
+                pid = 34567
+                returncode = 0
+                def communicate(self, *, input, timeout):
+                    self_input = input
+                    self_timeout = timeout
+                    assert self_input == "prompt"
+                    assert self_timeout == 5
+                    output.write_text('{"status":"READY"}')
+                    return "", ""
+                def terminate(self):
+                    raise AssertionError("must not terminate successful worker")
+            def spawn(args, **kwargs):
+                self.assertTrue(kwargs["start_new_session"])
+                self.assertIn("--sandbox", args)
+                return FakeProcess()
+            task = StructuredTask(
+                root, "PR-1", "plan", "prompt", root / "schema.json",
+                root, 5, "PR-1-00000001", seen.append,
+            )
+            with patch("codegrinder.adapters.codex.subprocess.Popen", side_effect=spawn):
+                result = CodexAdapter().execute(task)
+            self.assertEqual("READY", result["status"])
+            self.assertEqual([34567], seen)
+
+    def test_codex_process_callback_failure_terminates_child(self):
+        from codegrinder.interfaces import StructuredTask
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            class FakeProcess:
+                pid = 44444
+                returncode = 0
+                terminated = False
+                def communicate(self, **kwargs):
+                    return "", ""
+                def terminate(self):
+                    self.terminated = True
+                def kill(self):
+                    raise AssertionError("unnecessary kill")
+            child = FakeProcess()
+            def bad_callback(_pid):
+                raise RuntimeError("checkpoint store unavailable")
+            task = StructuredTask(
+                root, "PR-1", "review", "prompt", root / "schema.json",
+                root, 2, "PR-1-00000003", bad_callback,
+            )
+            with patch("codegrinder.adapters.codex.subprocess.Popen", return_value=child):
+                with self.assertRaisesRegex(RuntimeError, "checkpoint store unavailable"):
+                    CodexAdapter().execute(task)
+            self.assertTrue(child.terminated)
+
     def test_codex_invocation_is_read_only_high_with_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
