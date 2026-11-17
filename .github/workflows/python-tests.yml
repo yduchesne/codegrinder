@@ -40,6 +40,13 @@ jobs:
         run: uv run --no-sync pytest
       - name: Validate generated CycloneDX SBOM
         run: uv run --no-sync python scripts/sbom.py validate --input .artifacts/sbom/codegrinder.cdx.json
+      - name: Upload generated uv.lock for dependency review
+        uses: actions/upload-artifact@v4
+        with:
+          name: codegrinder-uv-lockfile
+          path: uv.lock
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload validated SBOM
         uses: actions/upload-artifact@v4
         with:

@@ -57,7 +57,7 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
     """Load optional CWD grind.toml, or require an explicit --conf file."""
     working_dir = (cwd if cwd is not None else Path.cwd()).resolve()
     explicit = path is not None
-    source = (path.expanduser() if explicit else working_dir / "grind.toml").resolve()
+    source = (path.expanduser() if path is not None else working_dir / "grind.toml").resolve()
     if not source.is_file():
         if explicit:
             raise ConfigurationError(f"CONFIG_MISSING: {source}")
