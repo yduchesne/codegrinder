@@ -32,7 +32,10 @@ from .interfaces import (
 from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
 
 ROOT = Path(__file__).resolve().parent
-STAGES = {"PLAN", "CODE", "VERIFY", "PUBLISH", "REVIEW", "FIXUP", "WAIT_MERGE", "DONE", "STOPPED"}
+STAGES = {
+    "PLAN", "CODE", "VERIFY", "PUBLISH", "REVIEW",
+    "REPLAN", "CODE_FIXUP", "FIXUP", "WAIT_MERGE", "DONE", "STOPPED",
+}
 PR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 class StopWorkflow(Exception):
@@ -337,21 +340,139 @@ Base branch: {self.config['base_branch']}."""
         data = self._structured(self.planner, wt, pid, "plan", prompt, ROOT / "schemas" / "plan.schema.json")
         markdown = validate_plan(data)
         (self.artifact(pid) / "plan.md").write_text(markdown + "\n", encoding="utf-8")
+        self.entry(pid)["active_plan"] = "plan.md"
+        self.save()
         self.transition(pid, "CODE")
+
+    def _active_plan(self, pid: str) -> tuple[str, str]:
+        """Return the frozen plan selected by the orchestrator, never by a worker."""
+        name = self.entry(pid).get("active_plan", "plan.md")
+        if not isinstance(name, str) or not re.fullmatch(r"plan(?:-fixup-[1-9][0-9]*)?\\.md", name):
+            raise StopWorkflow(f"PLAN_REFERENCE_INVALID: {pid}")
+        file = self.artifact(pid) / name
+        if not file.is_file():
+            raise StopWorkflow(f"ACTIVE_PLAN_MISSING: {pid}: {name}")
+        return name, file.read_text(encoding="utf-8")
+
+    def _start_replan(self, pid: str, *, source: str, findings: list[dict],
+                      summary: str = "", reviewed_head: str | None = None) -> None:
+        """Atomically allocate one bounded correction cycle and route to planning.
+
+        Feedback is durable and versioned. The stage and cycle counter advance in
+        one state write, so restart never bypasses planning or spends a second slot.
+        """
+        ent = self.entry(pid)
+        if ent["fixups"] >= self.config["max_fixups"]:
+            raise StopWorkflow("MAX_FIXUPS_REACHED")
+        if not findings:
+            raise StopWorkflow("REPLAN_FEEDBACK_EMPTY")
+        revision = ent["fixups"] + 1
+        feedback_name = f"feedback-{revision}.json"
+        feedback = {
+            "source": source,
+            "summary": summary,
+            "findings": findings,
+            "revision": revision,
+            "previous_plan": ent.get("active_plan", "plan.md"),
+            "reviewed_head": reviewed_head,
+        }
+        atomic_json(self.artifact(pid) / feedback_name, feedback)
+        # Legacy name remains as a convenience for diagnostics; the history is
+        # retained separately and the plan revision is the coding authority.
+        atomic_json(self.artifact(pid) / "fixup.json", feedback)
+        ent["fixups"] = revision
+        ent["active_feedback"] = feedback_name
+        ent["history"].append({
+            "at": utcnow(), "from": ent["stage"], "to": "REPLAN",
+            "reason": f"{source}: correction cycle {revision}",
+        })
+        ent["stage"] = "REPLAN"
+        self.save()
+        print(f"[{pid}] -> REPLAN ({source}: correction cycle {revision})", flush=True)
+
+    def replan(self, pr: dict, wt: Path) -> None:
+        """Invoke PlanningStep on the SAME PR using review/check observations."""
+        pid = pr["id"]
+        ent = self.entry(pid)
+        revision = ent["fixups"]
+        feedback_name = ent.get("active_feedback")
+        if not isinstance(feedback_name, str) or feedback_name != f"feedback-{revision}.json":
+            raise StopWorkflow("REPLAN_FEEDBACK_REFERENCE_INVALID")
+        feedback_path = self.artifact(pid) / feedback_name
+        if not feedback_path.is_file():
+            raise StopWorkflow("REPLAN_FEEDBACK_MISSING")
+        feedback = load_json(feedback_path)
+        previous_name, previous_plan = self._active_plan(pid)
+        if feedback.get("previous_plan") != previous_name:
+            raise StopWorkflow("REPLAN_PREVIOUS_PLAN_MISMATCH")
+        if feedback.get("source") == "codex_review":
+            require_clean(wt)
+            current_head = git(wt, "rev-parse", "HEAD")
+            if current_head != feedback.get("reviewed_head"):
+                raise StopWorkflow("REPLAN_REVIEWED_HEAD_CHANGED")
+        if not isinstance(feedback.get("findings"), list) or not feedback["findings"]:
+            raise StopWorkflow("REPLAN_FEEDBACK_INVALID")
+        history = []
+        for index in range(1, revision + 1):
+            path = self.artifact(pid) / f"feedback-{index}.json"
+            if not path.is_file():
+                raise StopWorkflow(f"REPLAN_FEEDBACK_HISTORY_MISSING: {index}")
+            history.append(load_json(path))
+        prompt = f"""You are the PLANNER for CORRECTION CYCLE {revision} of PR {pid}.
+You are NOT the coding agent. Examine the actual repository/worktree, the previous
+frozen plan, all prior feedback, and CURRENT REVIEW/TEST OBSERVATIONS.
+The current observations are mandatory input, not instructions to ignore or
+blindly trust: validate them against the code. Define exact corrective steps.
+Do not edit files, change Git state, expand PR scope, invent APIs, relax checks,
+or delegate design decisions to the coding agent.
+Write a complete REVISED FIXUP PLAN with exactly these headings:
+## Scope, ## Steps, ## Tests, ## Decision Matrix, ## Stop Conditions.
+The plan must specify precise repairs, objective validation, predetermined
+choices, and explicit STOP cases. If findings are contradictory or the
+implementation cannot safely meet them, return BLOCKED with a reason.
+Preserve already accepted design requirements and account for earlier attempts.
+Only READY and a valid detailed plan permits another coding invocation.
+PR REQUIREMENTS:
+{json.dumps(pr, indent=2)}
+PREVIOUS PLAN ({previous_name}):
+{previous_plan}
+FEEDBACK HISTORY (including current cycle):
+{json.dumps(history, indent=2)}
+CURRENT REVIEW/TEST OBSERVATIONS:
+{json.dumps(feedback, indent=2)}
+AUTHORITATIVE DETAILED PLAN AUTHORING GUIDE:
+{self.guide_text}
+"""
+        result = self._structured(
+            self.planner, wt, pid, f"replan-{revision}", prompt,
+            ROOT / "schemas" / "plan.schema.json",
+        )
+        markdown = validate_plan(result)
+        next_name = f"plan-fixup-{revision}.md"
+        (self.artifact(pid) / next_name).write_text(markdown + "\n", encoding="utf-8")
+        ent["active_plan"] = next_name
+        self.save()
+        self.transition(pid, "CODE_FIXUP", f"revised plan {next_name} validated")
 
     def coding_prompt(self, pr: dict, fixup: bool):
         pid = pr["id"]
-        plan = (self.artifact(pid) / "plan.md").read_text(encoding="utf-8")
+        plan_name, plan = self._active_plan(pid)
         directive = """Execute the FROZEN plan below exactly. Work only on specified paths; run relevant tests.
 Do NOT invent alternate architecture, relax tests, edit the plan, create commits, push, merge, or operate on other PRs.
 Stop with explicit BLOCKED and explanation if any condition does not fit the decision matrix.
 Leave changed files in this worktree for the orchestrator to validate and commit."""
         if fixup:
-            findings_path = self.artifact(pid) / "fixup.json"
-            directive += ("\nFix only the findings below; do not redesign the PR or silently waive findings:\n"
-                          + findings_path.read_text(encoding="utf-8"))
+            if plan_name != f"plan-fixup-{self.entry(pid)['fixups']}.md":
+                raise StopWorkflow("FIXUP_PLAN_NOT_APPROVED")
+            observations = self.artifact(pid) / f"feedback-{self.entry(pid)['fixups']}.json"
+            if not observations.is_file():
+                raise StopWorkflow("FIXUP_FEEDBACK_MISSING")
+            directive += ("\nFix only the findings below, following the revised plan. "
+                          "Do not redesign the PR or silently waive findings:\n"
+                          + observations.read_text(encoding="utf-8"))
         return (f"You are the CODING WORKER for {pid}.\n{directive}\n"
-                f"ALLOWED PATHS:\n{json.dumps(pr['allowed_paths'])}\nFROZEN PLAN:\n{plan}")
+                f"ALLOWED PATHS:\n{json.dumps(pr['allowed_paths'])}\n"
+                f"FROZEN PLAN ({plan_name}):\n{plan}")
 
     def verify(self, pr: dict, wt: Path):
         pid = pr["id"]
@@ -370,8 +491,8 @@ Leave changed files in this worktree for the orchestrator to validate and commit
                                "required_fix": "Fix underlying issue without weakening the check; inspect check log.",
                                "stderr_tail": res.stderr[-1500:]})
         if failed:
-            atomic_json(self.artifact(pid) / "fixup.json", {"source": "deterministic_checks", "findings": failed})
-            self.transition(pid, "FIXUP", "test failures")
+            self._start_replan(pid, source="deterministic_checks",
+                               findings=failed, summary="Deterministic checks failed")
         else:
             self.transition(pid, "PUBLISH", "all configured checks passed")
 
@@ -412,7 +533,7 @@ Leave changed files in this worktree for the orchestrator to validate and commit
         before = git(wt, "rev-parse", "HEAD")
         if before != self.entry(pid).get("published_head"):
             raise StopWorkflow("HEAD_CHANGED_SINCE_PUBLISH")
-        plan = (self.artifact(pid) / "plan.md").read_text(encoding="utf-8")
+        plan_name, plan = self._active_plan(pid)
         check_evidence = []
         for n, cmd in enumerate(pr["checks"]):
             log = self.artifact(pid) / f"check-{n}.stderr"
@@ -426,7 +547,7 @@ actual architecture, plan, tests, and safety/security implications. Never accept
 without inspecting observable evidence and relevant implementation. Treat unknowns as STOP.
 Return structured JSON matching schema; verdict PASS only when there are zero findings.
 For CHANGES_REQUIRED, give precise, independently actionable fixes with file paths.
-PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{json.dumps(check_evidence, indent=2)}\nFROZEN PLAN:\n{plan}"""
+PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{json.dumps(check_evidence, indent=2)}\nFROZEN PLAN ({plan_name}):\n{plan}"""
         data = self._structured(self.reviewer, wt, pid, f"review-{self.entry(pid)['fixups']}", prompt,
                           ROOT / "schemas" / "review.schema.json")
         require_clean(wt)
@@ -434,8 +555,10 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             raise StopWorkflow("HEAD_CHANGED_DURING_REVIEW")
         verdict, findings = validate_review(data)
         if verdict == "CHANGES_REQUIRED":
-            atomic_json(self.artifact(pid) / "fixup.json", {"source": "codex_review", "findings": findings})
-            self.transition(pid, "FIXUP", f"{len(findings)} review findings")
+            self._start_replan(
+                pid, source="codex_review", findings=findings,
+                summary=str(data.get("summary", "")), reviewed_head=before,
+            )
         else:
             self.entry(pid)["accepted_head"] = before
             self.save()
@@ -500,13 +623,15 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             self.publish(pr, wt, branch)
         elif stage == "REVIEW":
             self.review(pr, wt)
-        elif stage == "FIXUP":
-            if self.entry(pid)["fixups"] >= self.config["max_fixups"]:
-                raise StopWorkflow("MAX_FIXUPS_REACHED")
-            self.entry(pid)["fixups"] += 1
-            self.save()  # idempotent budget: an interrupted attempt consumes one slot
+        elif stage == "REPLAN":
+            self.replan(pr, wt)
+        elif stage == "CODE_FIXUP":
             self._coding(wt, pid, "fixup", self.coding_prompt(pr, True))
             self.transition(pid, "VERIFY")
+        elif stage == "FIXUP":
+            # Older persisted FIXUP states invoked the coding agent directly.
+            # Never silently resume that unsafe transition; reconcile manually.
+            raise StopWorkflow("LEGACY_FIXUP_REQUIRES_REPLAN_MIGRATION")
         elif stage == "WAIT_MERGE":
             return self.wait_merge(pr, wt)
         elif stage in ("STOPPED", "DONE"):
