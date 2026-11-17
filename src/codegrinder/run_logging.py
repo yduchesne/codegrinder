@@ -61,6 +61,22 @@ def safe_error_code(exc: Exception) -> str:
     return match.group(1) if match else type(exc).__name__.upper()[:64]
 
 
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    """Keep active and rotated files private even without a process-wide umask."""
+
+    def _open(self):
+        flags = os.O_CREAT | os.O_WRONLY | os.O_APPEND
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(self.baseFilename, flags, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            return os.fdopen(fd, "a", encoding=self.encoding, errors=self.errors)
+        except BaseException:
+            os.close(fd)
+            raise
+
+
 class WorkflowEventLogger:
     """Own handlers per workflow invocation, with one rotating log per PR."""
 
@@ -94,7 +110,7 @@ class WorkflowEventLogger:
             folder.mkdir(parents=True, exist_ok=True, mode=0o700)
             folder.chmod(0o700)
             filename = folder / self._suffix
-            handler = RotatingFileHandler(
+            handler = _PrivateRotatingFileHandler(
                 filename, maxBytes=self.settings.max_bytes,
                 backupCount=self.settings.backup_count, encoding="utf-8",
             )
