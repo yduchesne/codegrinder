@@ -78,7 +78,9 @@ class TestExplain(unittest.TestCase):
             self.assertIn("explain", output.getvalue())
 
     def test_explain_config_and_missing_state_file_location(self):
-        data = self.run_explain()
+        with patch.object(cli.os, "umask") as umask:
+            data = self.run_explain()
+        umask.assert_not_called()
         self.assertIn("model=custom-plan-model thinking=medium", data)
         self.assertIn("provider=another-provider model=model-123 thinking=high", data)
         self.assertIn("review: adapter=codex", data)

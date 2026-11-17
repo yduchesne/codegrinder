@@ -64,7 +64,6 @@ def state_directory(repo: Path, roadmap: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    os.umask(0o077)
     try:
         command_conf = getattr(args, f"{args.command}_conf")
         if args.conf is not None and command_conf is not None:
@@ -81,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
             print(explain(configuration, repo=repo, state_dir=location, roadmap=roadmap, guide=guide),
                   end="")
             return 0
+        os.umask(0o077)  # execution only; explain must not change process-wide umask
         if guide is None:
             raise ConfigurationError("GUIDE_UNSPECIFIED: supply --guide/-g or [plan.guide] path in TOML")
         if roadmap is None:

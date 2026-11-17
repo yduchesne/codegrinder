@@ -22,7 +22,11 @@ MAX_STATE_BYTES = 16 * 1024 * 1024
 def _path_label(path: Path | None) -> str:
     if path is None:
         return "N/A"
-    return f"{path} ({'present' if path.is_file() else 'MISSING'})"
+    try:
+        exists = path.is_file()
+    except OSError:
+        return f"{path} (UNREADABLE)"
+    return f"{path} ({'present' if exists else 'MISSING'})"
 
 
 def _file_sha256(path: Path | None) -> str | None:
@@ -35,9 +39,9 @@ def _read_state(directory: Path | None) -> tuple[dict | None, str]:
     if directory is None:
         return None, "N/A (no repository or roadmap)"
     filename = directory / "state.json"
-    if not filename.exists():
-        return None, "NOT_STARTED"
     try:
+        if not filename.exists():
+            return None, "NOT_STARTED"
         size = filename.stat().st_size
         if size > MAX_STATE_BYTES:
             return None, "INVALID (state exceeds size limit)"
