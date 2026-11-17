@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codegrinder import engine
-from codegrinder.interfaces import CodingTask, StructuredTask, WorkflowContext
+from codegrinder.interfaces import CodingResult, CodingTask, StructuredTask, WorkflowContext
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "roadmap.v1.md"
 VALID_PLAN = (
@@ -47,11 +47,16 @@ class FakeCoder:
     def identity(self) -> dict[str, str]:
         return {"adapter": "fake-coder"}
 
-    def execute(self, task: CodingTask) -> None:
+    def execute(self, task: CodingTask) -> CodingResult:
         self.calls.append(task)
         path = task.worktree / "src" / "file.py"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"# {task.pr_id}, {task.phase}, fixup {task.fixup_number}\n")
+        if task.on_progress:
+            from codegrinder.interfaces import CodingProgress
+            task.on_progress(CodingProgress(task.pr_id, task.phase, 1, 0.0, "tool_finished", "edit"))
+        return CodingResult(task.pr_id, task.phase, "fake", "fake-model", "COMPLETED",
+                            0, 0.0, 4, 1, 0, None, "", "", "")
 
 
 class FakeReviewer:

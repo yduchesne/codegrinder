@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 from codegrinder import engine
 from codegrinder.roadmap import parse_roadmap
+from codegrinder.interfaces import CodingResult
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "roadmap.v1.md"
 VALID_PLAN = "## Scope\n" + "x" * 310 + "\n## Steps\n## Tests\n## Decision Matrix\n## Stop Conditions"
@@ -101,6 +102,10 @@ class ControllerFixture(unittest.TestCase):
         self.assertIn("Authoring guide", planner.execute.call_args.args[0].prompt)
         self.assertEqual("plan", planner.execute.call_args.args[0].phase)
         coder = Mock()
+        coder.execute.return_value = CodingResult(
+            self.pid, "code", "mock", "mock-model", "COMPLETED",
+            0, 0.0, 3, 0, 0, None, "", "", "",
+        )
         self.controller.coder = coder
         self.controller._coding(self.wt, self.pid, "code", "execute")
         self.assertEqual("code", coder.execute.call_args.args[0].phase)

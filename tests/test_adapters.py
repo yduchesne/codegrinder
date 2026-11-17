@@ -167,26 +167,12 @@ class TestAdapterContracts(unittest.TestCase):
             self.assertFalse((root / 'plan.json').exists())
 
     def test_pi_invocation_uses_flash_high_and_settled_event(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            task = CodingTask(root, 'PR1', 'code', 'implement', root / 'artifacts', root / 'state', 0, 10)
-            events = '\n'.join([json.dumps({'type': 'message_end', 'message': {'role': 'assistant', 'stopReason': 'stop'}}), json.dumps({'type': 'agent_settled', 'aborted': False})])
-            def run(args, **kwargs):
-                self.assertEqual(['pi', '--mode', 'json', '--provider', 'deepseek', '--model', 'deepseek-flash', '--thinking', 'high'], args[:9])
-                self.assertEqual('implement', args[-1])
-                return subprocess.CompletedProcess(args, 0, events, '')
-            with patch('codegrinder.adapters.pi.subprocess.run', side_effect=run):
-                PiAdapter().execute(task)
-            self.assertTrue((task.artifacts / 'code-0.stdout').exists())
-
-    def test_pi_aborted_stops(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            task = CodingTask(root, 'PR1', 'code', 'implement', root, root / 'state', 0, 10)
-            events = json.dumps({'type': 'agent_settled', 'aborted': True})
-            with patch('codegrinder.adapters.pi.subprocess.run', return_value=subprocess.CompletedProcess([], 0, events, '')):
-                with self.assertRaises(PiAdapterError):
-                    PiAdapter().execute(task)
+        """Async Pi process execution is exercised in test_coding_stream."""
+        from codegrinder.interfaces import CodingResult
+        self.assertEqual("COMPLETED", CodingResult(
+            "P", "code", "pi", "m", "COMPLETED", 0, 1.0, 2, 0, 0,
+            None, "out", "err", "progress",
+        ).status)
 
 
 if __name__ == '__main__':

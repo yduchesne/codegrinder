@@ -146,6 +146,32 @@ entry point, Ruff, mypy, and coverage enforcement. The `pytest` configuration
 fails the build whenever total Codegrinder source coverage falls below 85%.
  Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.
 
+## Streaming coding execution and structured results
+
+`CodingStep.execute(CodingTask)` returns an immutable `CodingResult`
+instead of `None`. The result records PR and phase identities, adapter/model,
+terminal status, exit code, elapsed time, stream-event count, tool-call count,
+failed tools, Pi session ID when emitted, and paths to the raw stdout/stderr and
+sanitized progress JSONL. `DefaultOrchestrator` validates the result and
+durably records it in the PR state **before** advancing to verification.
+The Git worktree remains the authoritative code change evidence.
+
+The Pi adapter uses `asyncio.create_subprocess_exec()` to read JSONL stdout
+and stderr concurrently, while writing both streams incrementally to
+restricted-permission diagnostic files. It emits normalized `CodingProgress`
+events (agent/turn lifecycle, tool start/finish, and throttled stream activity)
+through the optional `CodingTask.on_progress` callback. Progress deliberately
+excludes untrusted model text, tool arguments and tool output. The orchestrator
+can display these events immediately without waiting for the coding session
+to terminate. Stream frames, aggregate output, and event counts are bounded;
+timeout and invalid JSONL fail closed and terminate the subprocess.
+
+The public orchestration method remains synchronous for compatibility.
+Asynchronous clients can await `PiAdapter.execute_async(task)` directly,
+while `execute(task)` acts as a sync compatibility wrapper. A future
+orchestrator-wide asyncio migration can use the awaitable interface without
+changing progress or result types.
+
 ## Agent preflight (before roadmap execution)
 
 `grind run` invokes `preflight(PreflightTask)` on **every configured phase
