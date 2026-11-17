@@ -1,11 +1,18 @@
 """Pi CLI adapter using the configured provider and model."""
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import re
 import subprocess
-from dataclasses import dataclass
+import time
+from contextlib import contextmanager
+from dataclasses import asdict, dataclass
 
-from ..interfaces import AgentExecutionError, CodingTask, PreflightTask, PreflightResult
+from ..interfaces import (
+    AgentExecutionError, CodingProgress, CodingResult, CodingTask, PreflightTask, PreflightResult,
+)
 
 
 class PiAdapterError(AgentExecutionError):
@@ -110,20 +117,217 @@ class PiAdapter:
             return PreflightResult.failed("MODEL_PROBE_INVALID_OUTPUT")
         return PreflightResult.passed()
 
-    def execute(self, task: CodingTask) -> None:
+    def execute(self, task: CodingTask) -> CodingResult:
+        """Sync compatibility wrapper; async hosts should await execute_async()."""
+        return asyncio.run(self.execute_async(task))
+
+    async def execute_async(self, task: CodingTask) -> CodingResult:
+        """Drain Pi's stdout/stderr concurrently and convert JSONL to safe progress."""
         task.artifacts.mkdir(parents=True, exist_ok=True)
         session_dir = task.state_dir / "pi-sessions" / task.pr_id
         session_dir.mkdir(parents=True, exist_ok=True)
         name = f"{task.phase}-{task.fixup_number}"
+        stdout_path = task.artifacts / f"{name}.stdout"
+        stderr_path = task.artifacts / f"{name}.stderr"
+        progress_path = task.artifacts / f"{name}.progress.jsonl"
+        result_path = task.artifacts / f"{name}.result.json"
         args = [
             self.executable, "--mode", "json", "--provider", self.provider,
             "--model", self.model, "--thinking", self.thinking,
             "--session-dir", str(session_dir), task.prompt,
         ]
-        completed = subprocess.run(args, cwd=task.worktree, capture_output=True,
-                                   text=True, timeout=task.timeout_seconds, check=False)
-        (task.artifacts / (name + ".stdout")).write_text(completed.stdout, encoding="utf-8")
-        (task.artifacts / (name + ".stderr")).write_text(completed.stderr, encoding="utf-8")
-        if completed.returncode:
-            raise PiAdapterError(f"PI_FAILED({completed.returncode}): {completed.stderr[-650:]}")
-        validate_pi_events(completed.stdout)
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args, cwd=str(task.worktree),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+        except OSError as exc:
+            raise PiAdapterError("PI_LAUNCH_FAILED") from exc
+        if process.stdout is None or process.stderr is None:
+            await _terminate_process(process)
+            raise PiAdapterError("PI_MISSING_OUTPUT_STREAM")
+
+        started = time.monotonic()
+        event_count = 0
+        tool_calls = 0
+        failed_tools = 0
+        session_id: str | None = None
+        settled = False
+        assistant: dict | None = None
+        progress_sequence = 0
+        updates = 0
+        max_line_bytes = 4 * 1024 * 1024
+        max_stdout_bytes = 128 * 1024 * 1024
+        max_stderr_bytes = 8 * 1024 * 1024
+
+        def record(event_type: str, progress_file, tool_name: str | None = None) -> None:
+            nonlocal progress_sequence
+            progress_sequence += 1
+            tool = (
+                tool_name if isinstance(tool_name, str)
+                and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", tool_name) else None
+            )
+            progress = CodingProgress(
+                pr_id=task.pr_id, phase=task.phase,
+                sequence=progress_sequence,
+                elapsed_seconds=round(time.monotonic() - started, 3),
+                event_type=event_type, tool_name=tool,
+            )
+            progress_file.write(
+                (json.dumps(asdict(progress), sort_keys=True) + "\n").encode("utf-8")
+            )
+            progress_file.flush()
+            if task.on_progress is not None:
+                task.on_progress(progress)
+
+        def consume(raw: bytes, progress_file) -> None:
+            nonlocal event_count, tool_calls, failed_tools, session_id, settled, assistant, updates
+            if len(raw) > max_line_bytes:
+                raise PiAdapterError("PI_EVENT_TOO_LARGE")
+            try:
+                event = json.loads(raw.decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as exc:
+                raise PiAdapterError("PI_INVALID_JSONL") from exc
+            if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+                raise PiAdapterError("PI_INVALID_JSONL: object/event type required")
+            event_count += 1
+            if event_count > 1_000_000:
+                raise PiAdapterError("PI_EVENT_COUNT_LIMIT")
+            kind = event["type"]
+            if kind == "session" and isinstance(event.get("id"), str):
+                session_id = event["id"][:128]
+            if kind == "agent_settled":
+                settled = event.get("aborted") is False
+            if kind == "message_end" and isinstance(event.get("message"), dict):
+                if event["message"].get("role") == "assistant":
+                    assistant = event["message"]
+                    record("assistant_message", progress_file)
+            elif kind == "tool_execution_start":
+                tool_calls += 1
+                record("tool_started", progress_file, event.get("toolName"))
+            elif kind == "tool_execution_end":
+                if event.get("isError") is True:
+                    failed_tools += 1
+                record("tool_finished", progress_file, event.get("toolName"))
+            elif kind in {
+                "agent_start", "agent_settled", "turn_start", "turn_end",
+                "auto_retry_start", "auto_retry_end", "compaction_start", "compaction_end",
+            }:
+                record(kind, progress_file)
+            elif kind == "message_update":
+                updates += 1
+                if updates % 100 == 0:
+                    record("stream_activity", progress_file)
+
+        async def drain_stdout(output, progress_file) -> None:
+            buffer = b""
+            total = 0
+            while True:
+                chunk = await process.stdout.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_stdout_bytes:
+                    raise PiAdapterError("PI_STDOUT_LIMIT")
+                output.write(chunk)
+                output.flush()
+                buffer += chunk
+                if len(buffer) > max_line_bytes and b"\n" not in buffer:
+                    raise PiAdapterError("PI_EVENT_TOO_LARGE")
+                while b"\n" in buffer:
+                    raw, buffer = buffer.split(b"\n", 1)
+                    if raw.strip():
+                        consume(raw, progress_file)
+                if len(buffer) > max_line_bytes:
+                    raise PiAdapterError("PI_EVENT_TOO_LARGE")
+            if buffer.strip():
+                consume(buffer, progress_file)
+
+        async def drain_stderr(output) -> None:
+            total = 0
+            while True:
+                chunk = await process.stderr.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_stderr_bytes:
+                    raise PiAdapterError("PI_STDERR_LIMIT")
+                output.write(chunk)
+                output.flush()
+
+        try:
+            with (
+                _private_binary(stdout_path) as out,
+                _private_binary(stderr_path) as err,
+                _private_binary(progress_path) as progress,
+            ):
+                record("started", progress)
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        drain_stdout(out, progress), drain_stderr(err), process.wait()
+                    ),
+                    timeout=task.timeout_seconds,
+                )
+        except TimeoutError as exc:
+            await _terminate_process(process)
+            raise PiAdapterError("PI_TIMEOUT") from exc
+        except BaseException:
+            await _terminate_process(process)
+            raise
+
+        if process.returncode != 0:
+            raise PiAdapterError(f"PI_FAILED({process.returncode})")
+        if not settled or assistant is None or assistant.get("stopReason") in {
+            "error", "aborted", "length", "pending", "toolUse",
+        }:
+            raise PiAdapterError("PI_INCOMPLETE: missing successful settled assistant")
+        if (
+            assistant.get("provider") is not None
+            and assistant.get("provider") != self.provider
+        ) or (
+            assistant.get("model") is not None and assistant.get("model") != self.model
+        ):
+            raise PiAdapterError("PI_MODEL_SELECTION_MISMATCH")
+
+        result = CodingResult(
+            pr_id=task.pr_id, phase=task.phase, adapter="pi",
+            model=self.model, status="COMPLETED",
+            exit_code=process.returncode,
+            duration_seconds=round(time.monotonic() - started, 3),
+            event_count=event_count, tool_calls=tool_calls,
+            failed_tools=failed_tools, session_id=session_id,
+            stdout_path=str(stdout_path), stderr_path=str(stderr_path),
+            progress_path=str(progress_path),
+        )
+        result_path.write_text(
+            json.dumps(asdict(result), sort_keys=True, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        result_path.chmod(0o600)
+        return result
+
+
+@contextmanager
+def _private_binary(path: Path):
+    """Keep raw agent traces restricted to the current user."""
+    fd = os.open(path, os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+    os.chmod(path, 0o600)
+    with os.fdopen(fd, "wb") as handle:
+        yield handle
+
+
+async def _terminate_process(process) -> None:
+    if process.returncode is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(process.wait(), timeout=5)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.wait()
