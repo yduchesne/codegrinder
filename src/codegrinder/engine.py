@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .roadmap import parse_roadmap
+from .run_logging import WorkflowEventLogger, safe_error_code
 from .interfaces import (
     AgentExecutionError,
     PlanningStep,
@@ -260,6 +261,8 @@ class DefaultOrchestrator:
                           "configuration_sha256": self.configuration_sha256,
                           "prs": {}, "created_at": utcnow()}
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.logs = WorkflowEventLogger(self.state_dir, context.logging)
+        self.logs.emit("WORKFLOW_INITIALIZED", state="INITIALIZED", disposition="SUCCEEDED")
         self.save()  # pin both input hashes before the first potentially interrupted stage
 
     def save(self):
@@ -275,14 +278,20 @@ class DefaultOrchestrator:
         if stage not in STAGES:
             raise StopWorkflow("INVALID_INTERNAL_STAGE")
         ent = self.entry(pid)
-        ent["history"].append({"at": utcnow(), "from": ent["stage"], "to": stage, "reason": reason})
+        old_stage = ent["stage"]
+        ent["history"].append({"at": utcnow(), "from": old_stage, "to": stage, "reason": reason})
         ent["stage"] = stage
         self.save()
+        self.logs.emit("STATE_TRANSITION", pr_id=pid, step=old_stage, state=stage,
+                       disposition="FAILED" if stage == "STOPPED" else "SUCCEEDED")
         print(f"[{pid}] -> {stage}" + (f" ({reason})" if reason else ""), flush=True)
 
     def stop(self, pid: str, reason: str):
         self.entry(pid)["stopped_reason"] = reason
         self.transition(pid, "STOPPED", reason)
+        self.logs.emit("WORKFLOW_STOPPED", pr_id=pid, state="STOPPED",
+                       disposition="FAILED", level="ERROR",
+                       error_code=safe_error_code(StopWorkflow(reason)))
         print("STOP: " + reason, file=sys.stderr, flush=True)
 
     def wt(self, pid: str):
@@ -312,10 +321,25 @@ class DefaultOrchestrator:
                     prompt: str, schema: Path) -> dict:
         if adapter is None:
             raise StopWorkflow(f"AGENT_NOT_CONFIGURED: {kind}")
-        return adapter.execute(StructuredTask(
-            worktree=wt, pr_id=pid, phase=kind, prompt=prompt, schema=schema,
-            artifacts=self.artifact(pid), timeout_seconds=self.config["command_timeout_seconds"],
-        ))
+        state = self.entry(pid)["stage"]
+        self.logs.emit("STEP_START", pr_id=pid, step=kind, state=state,
+                       disposition="STARTED")
+        started = time.monotonic()
+        try:
+            result = adapter.execute(StructuredTask(
+                worktree=wt, pr_id=pid, phase=kind, prompt=prompt, schema=schema,
+                artifacts=self.artifact(pid), timeout_seconds=self.config["command_timeout_seconds"],
+            ))
+        except Exception as exc:
+            self.logs.emit("STEP_FINISH", pr_id=pid, step=kind,
+                           state=self.entry(pid)["stage"], disposition="FAILED",
+                           level="ERROR", duration_ms=int((time.monotonic()-started)*1000),
+                           error_code=safe_error_code(exc))
+            raise
+        self.logs.emit("STEP_FINISH", pr_id=pid, step=kind,
+                       state=self.entry(pid)["stage"], disposition="SUCCEEDED",
+                       duration_ms=int((time.monotonic()-started)*1000))
+        return result
 
     def _coding(self, wt: Path, pid: str, kind: str, prompt: str) -> CodingResult:
         if self.coder is None:
@@ -328,24 +352,39 @@ class DefaultOrchestrator:
             display = f"[{pid}] {kind}: {event.event_type}"
             if event.tool_name:
                 display += f" ({event.tool_name})"
+            self.logs.emit("CODING_PROGRESS", pr_id=pid, step=kind,
+                           state=self.entry(pid)["stage"], disposition=event.event_type)
             print(display, flush=True)
 
-        result = self.coder.execute(CodingTask(
-            worktree=wt, pr_id=pid, phase=kind, prompt=prompt,
-            artifacts=self.artifact(pid), state_dir=self.state_dir,
-            fixup_number=self.entry(pid)["fixups"],
-            timeout_seconds=self.config["command_timeout_seconds"],
-            on_progress=progress,
-        ))
-        if not isinstance(result, CodingResult):
-            raise StopWorkflow("CODING_RESULT_INVALID: adapter did not return CodingResult")
-        if (result.status != "COMPLETED" or result.exit_code != 0
-                or result.pr_id != pid or result.phase != kind
-                or result.event_count < 1):
-            raise StopWorkflow("CODING_RESULT_INVALID: failed or inconsistent terminal result")
-        ent = self.entry(pid)
-        ent.setdefault("coding_results", []).append(asdict(result))
-        self.save()  # Persist before advancing to VERIFY.
+        self.logs.emit("STEP_START", pr_id=pid, step=kind,
+                       state=self.entry(pid)["stage"], disposition="STARTED")
+        started = time.monotonic()
+        try:
+            result = self.coder.execute(CodingTask(
+                worktree=wt, pr_id=pid, phase=kind, prompt=prompt,
+                artifacts=self.artifact(pid), state_dir=self.state_dir,
+                fixup_number=self.entry(pid)["fixups"],
+                timeout_seconds=self.config["command_timeout_seconds"],
+                on_progress=progress,
+            ))
+            if not isinstance(result, CodingResult):
+                raise StopWorkflow("CODING_RESULT_INVALID: adapter did not return CodingResult")
+            if (result.status != "COMPLETED" or result.exit_code != 0
+                    or result.pr_id != pid or result.phase != kind
+                    or result.event_count < 1):
+                raise StopWorkflow("CODING_RESULT_INVALID: failed or inconsistent terminal result")
+            ent = self.entry(pid)
+            ent.setdefault("coding_results", []).append(asdict(result))
+            self.save()  # Persist before advancing to VERIFY.
+        except Exception as exc:
+            self.logs.emit("STEP_FINISH", pr_id=pid, step=kind,
+                           state=self.entry(pid)["stage"], disposition="FAILED",
+                           level="ERROR", duration_ms=int((time.monotonic()-started)*1000),
+                           error_code=safe_error_code(exc))
+            raise
+        self.logs.emit("STEP_FINISH", pr_id=pid, step=kind,
+                       state=self.entry(pid)["stage"], disposition="SUCCEEDED",
+                       duration_ms=int((time.monotonic()-started)*1000))
         return result
 
     def plan(self, pr: dict, wt: Path):
@@ -414,6 +453,8 @@ Base branch: {self.config['base_branch']}."""
         })
         ent["stage"] = "REPLAN"
         self.save()
+        self.logs.emit("STATE_TRANSITION", pr_id=pid, step="review",
+                       state="REPLAN", disposition="FAILED")
         print(f"[{pid}] -> REPLAN ({source}: correction cycle {revision})", flush=True)
 
     def replan(self, pr: dict, wt: Path) -> None:
@@ -585,10 +626,14 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
                 pid, source="codex_review", findings=findings,
                 summary=str(data.get("summary", "")), reviewed_head=before,
             )
+            self.logs.emit("STEP_DISPOSITION", pr_id=pid, step="review",
+                           state="REPLAN", disposition="FAILED")
         else:
             self.entry(pid)["accepted_head"] = before
             self.save()
             self.transition(pid, "WAIT_MERGE", "independent Codex review PASS")
+            self.logs.emit("STEP_DISPOSITION", pr_id=pid, step="review",
+                           state="WAIT_MERGE", disposition="SUCCEEDED")
 
     def wait_merge(self, pr: dict, wt: Path):
         pid = pr["id"]
@@ -760,32 +805,61 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             identity = adapter.identity()
             if not isinstance(identity, dict):
                 raise StopWorkflow(f"ADAPTER_IDENTITY_INVALID: phase={phase}")
-            result = adapter.preflight(PreflightTask(
-                repo=self.repo, phase=phase,
-                timeout_seconds=self.config["command_timeout_seconds"],
-            ))
-            if not isinstance(result, PreflightResult):
-                raise StopWorkflow(f"ADAPTER_PREFLIGHT_INVALID: phase={phase}")
+            self.logs.emit("STEP_START", step=f"preflight_{phase}",
+                           state="PREFLIGHT", disposition="STARTED")
+            started = time.monotonic()
+            try:
+                result = adapter.preflight(PreflightTask(
+                    repo=self.repo, phase=phase,
+                    timeout_seconds=self.config["command_timeout_seconds"],
+                ))
+                if not isinstance(result, PreflightResult):
+                    raise StopWorkflow(f"ADAPTER_PREFLIGHT_INVALID: phase={phase}")
+            except Exception as exc:
+                self.logs.emit("STEP_FINISH", step=f"preflight_{phase}",
+                               state="PREFLIGHT", disposition="FAILED", level="ERROR",
+                               duration_ms=int((time.monotonic()-started)*1000),
+                               error_code=safe_error_code(exc))
+                raise
             if not result.ok:
                 # Never include raw harness output, credentials or tokens.
                 safe_code = result.code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", result.code) else "UNKNOWN_ERROR"
+                self.logs.emit("STEP_FINISH", step=f"preflight_{phase}",
+                               state="PREFLIGHT", disposition="FAILED", level="ERROR",
+                               duration_ms=int((time.monotonic()-started)*1000),
+                               error_code=safe_code)
                 raise StopWorkflow(
                     f"ADAPTER_PREFLIGHT_FAILED: phase={phase} "
                     f"adapter={identity.get('adapter', '<unknown>')} "
                     f"model={identity.get('model', '<unknown>')} reason={safe_code}"
                 )
+            self.logs.emit("STEP_FINISH", step=f"preflight_{phase}",
+                           state="PREFLIGHT", disposition="SUCCEEDED",
+                           duration_ms=int((time.monotonic()-started)*1000))
             print(f"PREFLIGHT_PASS: phase={phase} adapter={identity.get('adapter')} "
                   f"model={identity.get('model')}", flush=True)
 
     def run(self) -> int:
-        """Preflight every configured agent, then reconcile and run the roadmap."""
+        """Preflight agents, reconcile the roadmap, and run with lifecycle logs."""
+        self.logs.emit("WORKFLOW_START", state="PREFLIGHT", disposition="STARTED")
         try:
-            self.preflight()
-            self.reconcile_completed()
-        except (StopWorkflow, AgentExecutionError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
-            print(f"STOP: {exc}", file=sys.stderr)
-            return 2
-        return self.process(follow=True, max_wait_minutes=None)
+            try:
+                self.preflight()
+                self.reconcile_completed()
+            except (StopWorkflow, AgentExecutionError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                self.logs.emit("WORKFLOW_FINISH", state="STOPPED",
+                               disposition="FAILED", level="ERROR",
+                               error_code=safe_error_code(exc))
+                print(f"STOP: {exc}", file=sys.stderr)
+                return 2
+            result = self.process(follow=True, max_wait_minutes=None)
+            self.logs.emit("WORKFLOW_FINISH",
+                           state="DONE" if result == 0 else "STOPPED",
+                           disposition="SUCCEEDED" if result == 0 else "FAILED",
+                           level="INFO" if result == 0 else "ERROR")
+            return result
+        finally:
+            self.logs.close()
 
     def process(self, *, once=False, follow=False, wait_seconds=30, max_wait_minutes=None):
         current = None
@@ -798,6 +872,8 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             pid = pr["id"]
             if current is None:
                 current = pid
+                self.logs.emit("PR_SELECTED", pr_id=pid,
+                               state=self.entry(pid)["stage"], disposition="STARTED")
             elif once and current != pid:
                 print(f"ONE_PR_COMPLETE: {current}")
                 return 0

@@ -172,6 +172,49 @@ while `execute(task)` acts as a sync compatibility wrapper. A future
 orchestrator-wide asyncio migration can use the awaitable interface without
 changing progress or result types.
 
+## Operational logging
+
+Codegrinder uses Python's standard `logging` module, with timestamped
+`RotatingFileHandler` outputs. The default location is the persistent XDG
+state directory for the selected repo+roadmap:
+`${XDG_STATE_HOME:-~/.local/state}/codegrinder/<workflow-id>/logs/`.
+Logs are split into `_run/` (preflight, startup, roadmap-level events) and
+`<PR-ID>/` (individual PR lifecycle, phase invocation and disposition).
+File names include a UTC invocation timestamp and PID, e.g.
+`PR-001/grind-20261117T210000.123456Z-1234.log`. Rotated files retain
+that timestamp in the basename with `.1`, `.2` suffixes.
+
+Before and after every planning, coding and reviewing adapter invocation,
+the orchestrator records an INFO-level `STEP_START`/`STEP_FINISH` with PR,
+step name, current state, disposition, and duration. A rejected review
+records a FAILED disposition and transition to REPLAN; completion and
+STOPPED states are logged separately. Preflight calls are logged in
+`_run/`. Sanitized coding progress is logged without prompts, tool
+arguments, model responses or raw credentials. Original stdout/stderr traces
+remain separately in restricted adapter artifacts and **are not**
+automatically included in operational logs.
+
+Defaults are INFO, 10 MiB per file, 5 rotated backups, and console output.
+To change them, add the following to `grind.toml` (relative directory paths
+resolve against the current working directory, just like roadmap paths):
+
+```toml
+[logging]
+directory = "/tmp/codegrinder/my-project"
+level = "INFO"
+max_bytes = 10485760
+backup_count = 5
+console = true
+```
+
+A configured directory becomes the workflow's log root; Codegrinder creates
+`_run` and PR subfolders under it. Avoid sharing one custom root among
+different roadmap runs without intentionally handling their combined logs.
+Logs are written with file permissions 0600 and per-PR directories 0700.
+Rotating log backups do not delete historical logs from prior invocations:
+the invocation timestamp distinguishes them. Use your operating system's
+retention policy for older runs.
+
 ## Agent preflight (before roadmap execution)
 
 `grind run` invokes `preflight(PreflightTask)` on **every configured phase

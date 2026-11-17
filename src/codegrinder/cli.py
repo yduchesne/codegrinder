@@ -74,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         with single_runner(state_dir):
             context = WorkflowContext(
                 repo=repo, roadmap=roadmap, state_dir=state_dir, guide=guide,
-                configuration_sha256=configuration.sha256,
+                configuration_sha256=configuration.sha256, logging=configuration.logging,
             )
             orchestrator: Orchestrator = DefaultOrchestrator(
                 context=context, planner=planner, coder=coder, reviewer=reviewer,

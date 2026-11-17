@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Protocol, runtime_checkable
 
+from .run_logging import LoggingSettings
+
 
 @dataclass(frozen=True)
 class WorkflowContext:
@@ -18,6 +20,7 @@ class WorkflowContext:
     state_dir: Path
     guide: Path
     configuration_sha256: str | None = None
+    logging: LoggingSettings | None = None
 
 
 @runtime_checkable

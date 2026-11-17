@@ -8,6 +8,16 @@ path = "docs/ROADMAP.v1.md"
 [plan.guide]
 path = "docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md"
 
+# Logging defaults to XDG-backed per-workflow persistent state.
+# The directory, if supplied, contains _run/ and <PR-ID>/ log directories.
+# Paths relative to CWD work even when --conf lives elsewhere.
+[logging]
+level = "INFO"
+max_bytes = 10485760
+backup_count = 5
+console = true
+# directory = "/tmp/codegrinder/my-project"
+
 # Unspecified steps use the defaults below. All model IDs must be valid for
 # the selected agent's own model catalog; Codegrinder never auto-substitutes.
 

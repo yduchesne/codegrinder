@@ -13,6 +13,7 @@ from pathlib import Path
 
 from .adapters import CodexAdapter, PiAdapter
 from .interfaces import PlanningStep, CodingStep, ReviewStep
+from .run_logging import LoggingSettings
 
 MODEL_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 CODEX_EFFORTS = {"low", "medium", "high", "xhigh"}
@@ -37,6 +38,7 @@ class GrindConfig:
     review: dict[str, str]
     roadmap_path: Path | None
     guide_path: Path | None
+    logging: LoggingSettings
 
     def adapters(self) -> tuple[PlanningStep, CodingStep, ReviewStep]:
         """Construct phase adapters; the orchestration engine remains vendor-neutral."""
@@ -71,7 +73,7 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             raise ConfigurationError(f"CONFIG_INVALID: cannot parse TOML {source}: {exc}") from exc
         source_path = source
-    allowed_top_level = {"steps", "plan"}
+    allowed_top_level = {"steps", "plan", "logging"}
     if set(data) - allowed_top_level:
         raise ConfigurationError(f"CONFIG_INVALID: unknown top-level keys: {sorted(set(data) - allowed_top_level)}")
     plan_files = data.get("plan", {})
@@ -94,6 +96,34 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
 
     roadmap_path = plan_path("roadmap")
     guide_path = plan_path("guide")
+    log_data = data.get("logging", {})
+    if not isinstance(log_data, dict):
+        raise ConfigurationError("CONFIG_INVALID: logging must be a TOML table")
+    log_keys = {"directory", "level", "max_bytes", "backup_count", "console"}
+    if set(log_data) - log_keys:
+        raise ConfigurationError(
+            f"CONFIG_INVALID: unknown logging keys: {sorted(set(log_data) - log_keys)}"
+        )
+    log_path: Path | None = None
+    if "directory" in log_data:
+        value = _nonempty_str(log_data["directory"], "logging.directory")
+        log_path = Path(value).expanduser()
+        if not log_path.is_absolute():
+            log_path = working_dir / log_path
+        log_path = log_path.resolve()
+    log_level = log_data.get("level", "INFO")
+    if not isinstance(log_level, str):
+        raise ConfigurationError("CONFIG_INVALID: logging.level must be a string")
+    try:
+        logging_settings = LoggingSettings(
+            directory=log_path,
+            level=log_level,
+            max_bytes=log_data.get("max_bytes", 10 * 1024 * 1024),
+            backup_count=log_data.get("backup_count", 5),
+            console=log_data.get("console", True),
+        )
+    except ValueError as exc:
+        raise ConfigurationError(f"CONFIG_INVALID: {exc}") from exc
     steps = data.get("steps", {})
     if not isinstance(steps, dict):
         raise ConfigurationError("CONFIG_INVALID: steps must be a TOML table")
@@ -127,4 +157,5 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
         sha256=hashlib.sha256(raw).hexdigest() if raw is not None else None,
         plan=resolved["plan"], code=resolved["code"], review=resolved["review"],
         roadmap_path=roadmap_path, guide_path=guide_path,
+        logging=logging_settings,
     )
