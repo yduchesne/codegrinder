@@ -183,14 +183,22 @@ class TestOrchestrator(unittest.TestCase):
             with self.assertRaisesRegex(engine.StopWorkflow, "accepted_head"):
                 worker.reconcile_completed()
 
-    def test_completed_persisted_state_without_roadmap_status_rechecks_merge(self):
+    def test_completed_persisted_state_without_complete_roadmap_label_rechecks_merge(self):
+        worker = self.make_orchestrator()
+        worker.entry("PR-001")["stage"] = "DONE"
+        worker.save()
+        with patch.object(worker, "_verified_merge", return_value=merged_evidence()) as verify:
+            worker.reconcile_completed()
+        verify.assert_called_once()
+        self.assertEqual("merge-PR-001", worker.entry("PR-001")["merge_commit"])
+
+    def test_merged_dependent_without_completed_parent_stops(self):
         worker = self.make_orchestrator()
         worker.entry("PR-002")["stage"] = "DONE"
         worker.save()
-        with patch.object(worker, "_verified_merge", return_value=merged_evidence("PR-002")) as verify:
-            worker.reconcile_completed()
-        verify.assert_called_once()
-        self.assertEqual("merge-PR-002", worker.entry("PR-002")["merge_commit"])
+        with patch.object(worker, "_verified_merge", return_value=merged_evidence("PR-002")):
+            with self.assertRaisesRegex(engine.StopWorkflow, "DEPENDENCY_MERGE_CONFLICT"):
+                worker.reconcile_completed()
 
     def test_fresh_pending_roadmap_does_not_query_gh(self):
         worker = self.make_orchestrator()

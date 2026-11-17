@@ -586,6 +586,19 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             else:
                 self.save()
 
+        # A merged dependent PR without confirmed merged predecessors is a
+        # contradictory roadmap baseline, not a reason to schedule more work.
+        for pr in self.config["prs"]:
+            pid = pr["id"]
+            ent = self.state["prs"].get(pid, {})
+            if is_completed(ent.get("stage")):
+                for dependency in pr["depends_on"]:
+                    parent = self.state["prs"].get(dependency, {})
+                    if not is_completed(parent.get("stage")):
+                        raise StopWorkflow(
+                            f"DEPENDENCY_MERGE_CONFLICT: {pid} requires {dependency}"
+                        )
+
     def run(self) -> int:
         """Run the full roadmap after reconciling all claimed completions."""
         try:

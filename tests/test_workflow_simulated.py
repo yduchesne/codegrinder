@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codegrinder import engine
-from codegrinder.interfaces import CodingTask, StructuredTask
+from codegrinder.interfaces import CodingTask, StructuredTask, WorkflowContext
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "roadmap.v1.md"
 VALID_PLAN = (
@@ -89,8 +89,8 @@ class TestSimulatedRoadmap(unittest.TestCase):
         self.planner = FakePlanner()
         self.coder = FakeCoder()
         self.reviewer = FakeReviewer()
-        self.controller = engine.Controller(
-            self.repo, self.roadmap, self.state, self.guide,
+        self.controller = engine.DefaultOrchestrator(
+            WorkflowContext(self.repo, self.roadmap, self.state, self.guide),
             planner=self.planner, coder=self.coder, reviewer=self.reviewer,
         )
         self.sha_versions = {"PR-001": 0, "PR-002": 0}
@@ -194,8 +194,8 @@ class TestSimulatedRoadmap(unittest.TestCase):
             self.assertEqual(1, len(self.coder.calls))
             self.assertEqual(1, len(self.reviewer.calls))
             self.merged["PR-001"] = True
-            resumed = engine.Controller(
-                self.repo, self.roadmap, self.state, self.guide,
+            resumed = engine.DefaultOrchestrator(
+                WorkflowContext(self.repo, self.roadmap, self.state, self.guide),
                 planner=self.planner, coder=self.coder, reviewer=self.reviewer,
             )
             with patch.object(resumed, "prepare", side_effect=self.prepare):
