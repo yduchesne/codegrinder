@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codegrinder import engine
-from codegrinder.interfaces import Orchestrator, WorkflowContext
+from codegrinder.interfaces import Orchestrator, WorkflowContext, PreflightResult
 from codegrinder.roadmap import RoadmapFormatError, parse_roadmap
 from codegrinder.selection import (
     PRSelectionError,
@@ -108,6 +108,8 @@ class TestOrchestrator(unittest.TestCase):
         self.planner.identity.return_value = {"adapter": "mock-plan"}
         self.coder.identity.return_value = {"adapter": "mock-code"}
         self.reviewer.identity.return_value = {"adapter": "mock-review"}
+        for adapter in (self.planner, self.coder, self.reviewer):
+            adapter.preflight.return_value = PreflightResult.passed()
 
     def make_orchestrator(self, completed: bool = False):
         if completed:
@@ -119,6 +121,64 @@ class TestOrchestrator(unittest.TestCase):
         return engine.DefaultOrchestrator(
             self.context, planner=self.planner, coder=self.coder, reviewer=self.reviewer,
         )
+
+    def test_preflight_invoked_for_all_three_phases_before_process(self):
+        worker = self.make_orchestrator()
+        calls: list[str] = []
+        for phase, adapter in (
+            ("plan", self.planner), ("code", self.coder), ("review", self.reviewer)
+        ):
+            def check(task, name=phase):
+                self.assertEqual(name, task.phase)
+                self.assertEqual(self.repo, task.repo)
+                calls.append(name)
+                return PreflightResult.passed()
+            adapter.preflight.side_effect = check
+        with patch.object(worker, "process", return_value=0) as process:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(0, worker.run())
+        self.assertEqual(["plan", "code", "review"], calls)
+        process.assert_called_once()
+
+    def test_mock_adapter_failure_stops_before_process_or_merge_reconciliation(self):
+        worker = self.make_orchestrator()
+        self.coder.preflight.return_value = PreflightResult.failed("MODEL_PROBE_FAILED")
+        with patch.object(worker, "process") as process, \
+             patch.object(worker, "reconcile_completed") as reconcile, \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(2, worker.run())
+        self.assertIn("phase=code", err.getvalue())
+        self.assertIn("MODEL_PROBE_FAILED", err.getvalue())
+        process.assert_not_called()
+        reconcile.assert_not_called()
+        self.planner.preflight.assert_called_once()
+        self.coder.preflight.assert_called_once()
+        self.reviewer.preflight.assert_not_called()
+        self.planner.execute.assert_not_called()
+        self.coder.execute.assert_not_called()
+        self.reviewer.execute.assert_not_called()
+
+    def test_missing_or_malformed_preflight_contract_fails_closed(self):
+        worker = self.make_orchestrator()
+        self.planner.preflight.return_value = {"ok": True}
+        with contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(2, worker.run())
+        self.assertIn("ADAPTER_PREFLIGHT_INVALID", error.getvalue())
+        self.planner.preflight.return_value = PreflightResult.passed()
+        worker.coder = object()
+        with contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(2, worker.run())
+        self.assertIn("ADAPTER_PREFLIGHT_UNSUPPORTED", error.getvalue())
+
+    def test_review_adapter_preflight_failure_blocks_same_pr(self):
+        worker = self.make_orchestrator()
+        self.reviewer.preflight.return_value = PreflightResult.failed("AUTH_NOT_READY")
+        with patch.object(worker, "process") as process, \
+             contextlib.redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(2, worker.run())
+        self.assertIn("phase=review", error.getvalue())
+        self.assertIn("AUTH_NOT_READY", error.getvalue())
+        process.assert_not_called()
 
     def test_default_orchestrator_implements_protocol_and_injects_steps(self):
         worker = self.make_orchestrator()

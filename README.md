@@ -146,6 +146,31 @@ entry point, Ruff, mypy, and coverage enforcement. The `pytest` configuration
 fails the build whenever total Codegrinder source coverage falls below 85%.
  Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.
 
+## Agent preflight (before roadmap execution)
+
+`grind run` invokes `preflight(PreflightTask)` on **every configured phase
+adapter** (plan, code, review) before PR selection, GitHub merge reconciliation
+or any coding/review execution. `PreflightCheck` is a protocol shared by
+`PlanningStep`, `CodingStep` and `ReviewStep`; `PreflightResult` reports
+a status code without exposing authentication output. Missing preflight support,
+malformed results and any failed check stop the entire run.
+
+The Codex adapter checks `codex login status` and sends a minimal, **read-only,
+ephemeral model request** using the exact model and reasoning effort configured
+for that phase. The Pi adapter checks `pi auth check` with the exact configured
+provider and model, then sends a minimal **no-tools, no-session JSONL** request
+using the configured model and thinking level. Both adapters verify actual model
+responses; listing models or inspecting local credentials alone does not prove
+that a model can answer. No fallback model, provider-specific Codegrinder logic,
+credential collection or raw CLI authentication-output logging is allowed.
+
+Preflights use the current harness's configured credentials and consume a
+small number of model tokens. A successful preflight is not a guarantee against
+later rate limits, revoked credentials or outages: runtime errors still stop
+the workflow. For an untrusted project, remember that harness-specific local
+extensions/configuration and login-status commands are outside Codegrinder's
+sandbox guarantees; use an isolated runner.
+
 ## Review rejection and mandatory replanning
 
 An actionable review rejection **never transitions directly to coding**.

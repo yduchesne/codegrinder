@@ -21,6 +21,106 @@ class TestAdapterContracts(unittest.TestCase):
         self.assertIsInstance(codex, ReviewStep)
         self.assertIsInstance(pi, CodingStep)
 
+    def test_codex_preflight_probes_selected_model_and_auth(self):
+        from codegrinder.interfaces import PreflightTask, PreflightCheck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            adapter = CodexAdapter(model="codex-custom-model", reasoning_effort="high")
+            self.assertIsInstance(adapter, PreflightCheck)
+            invocations = []
+            def fake_run(args, **kwargs):
+                invocations.append(list(args))
+                self.assertEqual(root, kwargs["cwd"])
+                if args[1:3] == ["login", "status"]:
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                return subprocess.CompletedProcess(args, 0, "CODEGRINDER_PREFLIGHT_OK", "")
+            with patch("codegrinder.adapters.codex.subprocess.run", side_effect=fake_run):
+                self.assertTrue(adapter.preflight(PreflightTask(root, "plan", 30)).ok)
+            self.assertEqual(["codex", "login", "status"], invocations[0])
+            self.assertIn("codex-custom-model", invocations[1])
+            self.assertIn("--ephemeral", invocations[1])
+            self.assertIn("read-only", invocations[1])
+
+    def test_codex_preflight_fails_closed_without_leaking_auth_output(self):
+        from codegrinder.interfaces import PreflightTask
+        with tempfile.TemporaryDirectory() as tmp:
+            task = PreflightTask(Path(tmp), "review", 30)
+            auth_failure = subprocess.CompletedProcess([], 1, "SECRET_TOKEN", "SECRET_TOKEN")
+            with patch("codegrinder.adapters.codex.subprocess.run", return_value=auth_failure) as run:
+                result = CodexAdapter().preflight(task)
+            self.assertEqual("AUTH_NOT_READY", result.code)
+            self.assertEqual(1, run.call_count)
+            responses = [
+                subprocess.CompletedProcess([], 0, "", ""),
+                subprocess.CompletedProcess([], 1, "", "PRIVATE_API_KEY"),
+            ]
+            with patch("codegrinder.adapters.codex.subprocess.run", side_effect=responses):
+                result = CodexAdapter().preflight(task)
+            self.assertEqual("MODEL_PROBE_FAILED", result.code)
+            self.assertNotIn("PRIVATE_API_KEY", repr(result))
+
+    def test_codex_preflight_rejects_unverified_response_or_missing_binary(self):
+        from codegrinder.interfaces import PreflightTask
+        with tempfile.TemporaryDirectory() as tmp:
+            task = PreflightTask(Path(tmp), "review", 30)
+            auth = subprocess.CompletedProcess([], 0, "", "")
+            empty = subprocess.CompletedProcess([], 0, "other answer", "")
+            with patch("codegrinder.adapters.codex.subprocess.run", side_effect=[auth, empty]):
+                self.assertEqual(
+                    "MODEL_PROBE_UNVERIFIED", CodexAdapter().preflight(task).code
+                )
+            with patch("codegrinder.adapters.codex.subprocess.run", side_effect=FileNotFoundError()):
+                self.assertEqual(
+                    "HARNESS_NOT_INSTALLED", CodexAdapter().preflight(task).code
+                )
+
+    def test_pi_preflight_uses_arbitrary_provider_model_without_session_or_tools(self):
+        from codegrinder.interfaces import PreflightTask, PreflightCheck
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            adapter = PiAdapter(provider="example-provider", model="model-x", thinking="medium")
+            self.assertIsInstance(adapter, PreflightCheck)
+            events = "\n".join([
+                json.dumps({"type": "message_end", "message": {
+                    "role": "assistant", "stopReason": "stop",
+                    "content": [{"type": "text", "text": "CODEGRINDER_PREFLIGHT_OK"}],
+                }}),
+                json.dumps({"type": "agent_settled", "aborted": False}),
+            ])
+            invocations = []
+            def fake_run(args, **kwargs):
+                invocations.append(args)
+                self.assertEqual(root, kwargs["cwd"])
+                return subprocess.CompletedProcess(args, 0, "" if len(invocations) == 1 else events, "")
+            with patch("codegrinder.adapters.pi.subprocess.run", side_effect=fake_run):
+                self.assertTrue(adapter.preflight(PreflightTask(root, "code", 30)).ok)
+            self.assertEqual(
+                ["pi", "auth", "check", "--provider", "example-provider",
+                 "--model", "model-x", "--json"],
+                invocations[0],
+            )
+            self.assertIn("--no-session", invocations[1])
+            self.assertIn("--no-tools", invocations[1])
+            self.assertIn("example-provider", invocations[1])
+            self.assertIn("model-x", invocations[1])
+
+    def test_pi_preflight_rejects_bad_auth_and_invalid_model_result(self):
+        from codegrinder.interfaces import PreflightTask
+        with tempfile.TemporaryDirectory() as tmp:
+            task = PreflightTask(Path(tmp), "code", 30)
+            failure = subprocess.CompletedProcess([], 2, "PRIVATE_API_KEY", "")
+            with patch("codegrinder.adapters.pi.subprocess.run", return_value=failure) as run:
+                result = PiAdapter().preflight(task)
+            self.assertEqual("AUTH_NOT_READY", result.code)
+            self.assertEqual(1, run.call_count)
+            self.assertNotIn("PRIVATE_API_KEY", repr(result))
+            auth = subprocess.CompletedProcess([], 0, "", "")
+            wrong = subprocess.CompletedProcess([], 0, "not-jsonl", "")
+            with patch("codegrinder.adapters.pi.subprocess.run", side_effect=[auth, wrong]):
+                self.assertEqual("MODEL_PROBE_INVALID_OUTPUT", PiAdapter().preflight(task).code)
+            with patch("codegrinder.adapters.pi.subprocess.run", side_effect=FileNotFoundError()):
+                self.assertEqual("HARNESS_NOT_INSTALLED", PiAdapter().preflight(task).code)
+
     def test_codex_invocation_is_read_only_high_with_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
