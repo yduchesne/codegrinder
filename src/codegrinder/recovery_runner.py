@@ -34,13 +34,13 @@ class RecoveryCoordinator:
         self.c._finish_attempt(pid, "INTERRUPTED" if retry else "RECOVERED", decision)
 
     def snapshot(self, pid: str) -> dict:
-        from .engine import git
+        from .engine import git, StopWorkflow
         wt = self.c.wt(pid)
         if not (wt / ".git").exists():
             self.block(pid, "RECOVERY_WORKTREE_MISSING")
         try:
             return worktree_snapshot(wt, git)
-        except (RecoveryError, OSError, ValueError):
+        except (RecoveryError, OSError, ValueError, StopWorkflow):
             self.block(pid, "RECOVERY_WORKTREE_UNREADABLE")
 
     def completed_coding(self, pid: str, record: dict) -> CodingResult | None:
@@ -305,6 +305,8 @@ class RecoveryCoordinator:
             try:
                 if not path.is_file():
                     self.block(pid, "RECOVERY_AUDIT_MISSING")
+                if path.is_symlink() or path.stat().st_size > 1024 * 1024:
+                    self.block(pid, "RECOVERY_AUDIT_UNTRUSTED")
                 audited = json.loads(path.read_text(encoding="utf-8"))
                 if (not isinstance(audited, dict) or audited.get("id") != record["id"]
                         or audited.get("stage") != record["stage"]):
