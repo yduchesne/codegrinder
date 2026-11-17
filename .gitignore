@@ -57,3 +57,12 @@ Desktop.ini
 
 # Local test / notebook artifacts
 .ipynb_checkpoints/
+
+# Codegrinder workspace, state and local execution artifacts
+.codegrinder/
+codegrinder-state/
+*.egg-info/
+
+# Local Codegrinder configuration (may include private endpoints / credentials)
+grind.toml
+!grind.toml.example

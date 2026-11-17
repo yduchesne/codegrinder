@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codegrinder"
+version = "0.1.0"
+description = "Deterministic, roadmap-driven Codex/Pi coding workflow orchestration"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Codegrinder contributors"}]
+dependencies = []
+
+[project.scripts]
+grind = "codegrinder.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+codegrinder = ["schemas/*.json"]

@@ -1,100 +1,100 @@
-# PRFlow — Codex planning/review + Pi/DeepSeek coding
+# Codegrinder
 
-This is a **portable starter implementation**, not a preconfigured integration with any user's actual repo. It has not been integration-tested against a live Codex/Pi/DeepSeek/GitHub account; perform a disposable-repository pilot before unattended use.
+Codegrinder is an installable Python package for executing a **versioned pull-request roadmap** through a deterministic, resumable workflow. It uses pluggable step interfaces: Codex plans, Pi codes, Codex independently reviews; the controller owns PR ordering, Git operations, CI gates, review/fixup cycles, and durable state. The framework is a **pilot**, not production-validated for unsupervised use.
 
-## Architecture
+## Installation
 
-`roadmap.json` (all PR definitions, in order) -> `prflow.py` deterministic state machine -> Codex plans -> Pi implements -> project checks -> Git push/PR creation -> Codex reviews -> Pi fixes -> checks and review again -> merge is externally confirmed -> next PR. Execution is **sequential**.
-
-- Roadmap is hashed; modification during a run causes an explicit stop.
-- Durable per-PR stage/history is stored in `STATE_DIR/state.json`, outside the working repository.
-- Each PR gets a separate Git worktree, Codex plan/review artifacts and Pi session, all in `STATE_DIR`.
-- Script takes a single-runner file lock (Linux/WSL2 `fcntl`).
-- Codex planning and review are run with `--sandbox read-only` and schema-constrained final JSON.
-- Pi runs in `--mode json`; successful completion requires `agent_settled` and no terminal error.
-- Only checks specified by the roadmap execute as deterministic quality gates. The agent cannot alter configured gates without changing the frozen roadmap.
-- Agent edits are checked against `allowed_paths` (this is **post-execution detection**, not a security sandbox).
-- Pi fixups are limited by `max_fixups`, including attempts interrupted mid-run.
-- The controller creates branches, commits, pushes, opens PRs, checks status and merges. Pi is instructed not to do those things.
-- Default mode requires a separate human merge; `--auto-merge` opts into GitHub's standard auto-merge rules without bypassing protection.
-- `DONE` is marked only after GitHub reports the PR as merged. No PR is selected merely because an agent claimed success.
-
-## Environment (Linux / WSL2)
-
-Requires Python 3.11+, `git`, GitHub CLI `gh`, OpenAI `codex` CLI, `pi`, and authenticated provider credentials. DeepSeek's current Pi integration describes a `models.json` provider with `deepseek-v4-pro` and `deepseek-v4-flash`. Check your installed Pi version and `pi --list-models deepseek` before using the configured model.
-
-See:
-- Codex noninteractive: https://learn.chatgpt.com/docs/non-interactive-mode
-- Pi CLI: https://docs.pi.dev/latest/cli
-- Pi JSON integration: https://docs.pi.dev/latest/cli-integration
-- DeepSeek + Pi: https://github.com/deepseek-ai/awesome-deepseek-agent/blob/main/docs/pi_mono.md
-- GitHub merge CLI: https://cli.github.com/manual/gh_pr_merge
-
-## Configure
-
-1. Copy `config/roadmap.json` to an appropriate path **outside** the target repo, and fill in the *actual* complete PR list in execution order. The two entries shipped are **placeholders**: do not run them against a real project.
-2. For each PR supply: stable ID, title, goal, dependencies on earlier PRs, objectively testable acceptance requirements, allowed file globs, and pre-approved shell check commands. Use exact check command and full test set required for that PR; no tests are invented by agents.
-3. Set `planning_guide` to the repo-relative authoring guide (or `""` if unavailable). A configured but missing guide stops planning.
-4. Set `required_checks` to exact GitHub check names from the repo's actual CI. The controller **will not automatically merge** without a configured CI list. Required GitHub branch protection and approvals should be set on `main` separately.
-5. Set `max_fixups` and `command_timeout_seconds` to budgets. Keep `merge_mode: manual` initially.
-6. Authenticate `gh`, `codex`, and Pi/DeepSeek with your normal tools. Do **not** commit API keys, auth files, state artifacts, or model logs.
-7. Run the workflow in a security-isolated environment before fully unattended operation. **Pi tools are not inherently sandboxed**. Run Pi without GitHub write credentials or host secrets, ideally using a restricted container/runner with only its isolated worktree available; leave network/git authorization to the orchestrator outside that container. This starter does **not** implement that isolation. For trusted personal repositories on a personal machine, assess that risk explicitly.
-
-## Commands
+Requires Python 3.11+ and the external `git`, `gh`, `codex`, and `pi` CLIs installed and authenticated on the machine that will execute workflows.
 
 ```bash
-export REPO="$HOME/dev/quervant"                  # change for your repo
-export ROADMAP="$HOME/automation/roadmap.json"   # completed roadmap JSON
-export STATE_DIR="$HOME/prflow-state/quervant"   # outside REPO, not versioned
-
-python3 prflow.py preflight --repo "$REPO" --roadmap "$ROADMAP" --state-dir "$STATE_DIR"
-python3 -m unittest discover -s tests -v
-python3 prflow.py status --repo "$REPO" --roadmap "$ROADMAP" --state-dir "$STATE_DIR"
-
-# Pilot just one PR. Returns exit 3 if it is awaiting CI/merge.
-python3 prflow.py run --once --repo "$REPO" --roadmap "$ROADMAP" --state-dir "$STATE_DIR"
-
-# After completing the pilot, allow GitHub auto-merge and continue all PRs.
-python3 prflow.py run --auto-merge --follow --repo "$REPO" --roadmap "$ROADMAP" --state-dir "$STATE_DIR"
+python3 -m pip install -e .
+grind --help
+grind run --help
 ```
 
-`--follow` polls the current PR every 30 seconds for up to 60 minutes (change via `--wait-seconds` / `--max-wait-minutes`). If still pending, exit 3 with state retained; run again later. Exit 0 means entire roadmap complete (or one merged PR with `--once`), exit 2 means a stop, exit 3 means pending merge/CI.
+Codegrinder runs from within the target project's Git checkout. The package can be installed once and then invoked from other repositories.
 
-Inspect `STATE_DIR/state.json`, `STATE_DIR/artifacts/<PR>/plan.md`, `review-*.json` and check logs. A `STOPPED` PR requires explicit inspection, then `unblock` with the safest appropriate stage:
+## CLI
 
 ```bash
-python3 prflow.py unblock --pr-id PR-001 --stage VERIFY \
-  --repo "$REPO" --roadmap "$ROADMAP" --state-dir "$STATE_DIR"
+grind --help                 # Root help and command hierarchy
+grind run --help             # Run-specific flags and help
+
+grind run \
+  --guide docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md \
+  --roadmap docs/ROADMAP.v1.md
+
+grind --conf /path/to/project-agents.toml run \
+  -g docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md \
+  -r docs/ROADMAP.v1.md
+
+# Equivalent configuration placement:
+grind run --conf /path/to/project-agents.toml -g guide.md -r roadmap.md
 ```
 
-**Do not** use `unblock` to waive security, scope, review or CI failures. Only restart after resolving the underlying issue and confirming evidence. If a roadmap change is legitimately required mid-run, stop and reconcile the running PR and state before replacing the original roadmap; direct edits trigger the hash guard.
+`run` processes the entire ordered roadmap, automatically resuming the next incomplete PR. `-g` / `--guide` and `-r` / `--roadmap` are required. Both paths resolve relative to the current working directory (unless absolute). The roadmap must use the *strict versioned Markdown format* shown in [`examples/roadmap.v1.md`](examples/roadmap.v1.md), not an unstructured prose roadmap.
 
-## Important safeguards still needed for production unattended operation
+## Agent configuration (`grind.toml`)
 
-- Containerized Pi worker, with credentials/network restrictions; GitHub tokens only in the controller, not Pi's process/home; Codex review/planning execution equally isolated from untrusted repo configuration/extensions.
-- Stronger scope enforcement (filesystem sandbox; Git diff checks alone don't prevent access outside repo).
-- Verified GitHub branch protection, merge queue handling, required external approvals where applicable.
-- A per-PR frozen base SHA, signed evidence and independent review of the exact **published** SHA (controller checks SHA equality, but should also verify remote branch updates after asynchronous merge requests).
-- Budget controls for API spend, rate limits and maximum program runtime; alerting when the workflow exits 2/3.
-- Better recovery for ambiguous in-flight subprocess crashes (this starter fails closed and requires operator intervention).
-- End-to-end tests with fake codex/pi/gh executables and a disposable GitHub repo.
+Configuration discovery is explicit and predictable:
 
-## Stop behavior / decision matrix
+1. Without `--conf`, Codegrinder loads `./grind.toml` from the **current working directory** if it exists; otherwise the built-in defaults apply.
+2. With `grind --conf PATH` (or `grind run --conf PATH`), Codegrinder loads exactly that file. Any file name is accepted; it does not have to be `grind.toml`.
+3. An explicitly specified but missing file, malformed TOML, unknown setting, unsupported adapter, or invalid value is a **hard STOP**. There is no silent adapter/model fallback.
 
-| Condition | Decision |
-|---|---|
-| Roadmap changed; missing plan guide; unknown dependency | STOP |
-| Codex plan BLOCKED or plan schema/required headings missing | STOP |
-| Pi output missing/incomplete, timeout, or process failure | STOP |
-| Changed file lies outside PR `allowed_paths` | STOP |
-| A configured local check fails | Pi fixup within fixed budget; recheck |
-| Codex review finds actionable deficiencies | Pi fixup within fixed budget; recheck and rereview |
-| Reviewer returns STOP or inconsistent structured response | STOP |
-| PR head changed after accepted review | STOP |
-| CI required check fails | STOP (operator investigates) |
-| CI pending, PR open, reviewer passed | Wait/poll or exit 3; retain stage |
-| Merge requested but not GitHub-confirmed | Do not advance |
-| GitHub reports exact reviewed PR merged | Mark DONE, select next uncompleted PR |
-| Every roadmap PR DONE | ROADMAP_COMPLETE |
+See the checked-in [`grind.toml.example`](grind.toml.example). Copy it to your working directory to customize:
 
-The controller is intentionally conservative. The first version should be exercised on a noncritical roadmap with small documentation/code PRs.
+```toml
+[steps.plan]
+adapter = "codex"
+model = "gpt-6-sol"
+reasoning_effort = "high"
+
+[steps.code]
+adapter = "pi"
+provider = "deepseek"
+model = "deepseek-flash"
+thinking = "high"
+
+[steps.review]
+adapter = "codex"
+model = "gpt-6-sol"
+reasoning_effort = "high"
+```
+
+Any missing section or setting inherits the defaults. The Codex CLI model ID for **GPT-6 Sol** is `gpt-6-sol`, *not* `gpt-6`; DeepSeek's current Flash API model ID is `deepseek-flash` (not the compatibility alias `deepseek-v4-flash`). Pi selects the model via its own `--provider` and `--model` options. You must ensure that **your installed, authenticated Codex and Pi harnesses expose these exact model IDs**; configurations must use IDs valid for the selected harness, not display names. Codegrinder checks identifier syntax and passes exact IDs to the relevant CLI, stopping on an invocation error. It cannot infer account-specific model entitlements and will never replace an unavailable model with another one automatically. Use `pi --list-models` and Codex's model picker to check local availability before your first run.
+
+Only `codex` is supported for planning/review and `pi` for coding in this first version. Protocols allow additional adapters without redesigning the controller. `grind.toml` is ignored by Git; the tracked `.example` is the public configuration template. Store API credentials in the harnesses' own authenticated mechanisms, **not** in the TOML file.
+
+## Steps and contracts
+
+`src/codegrinder/interfaces.py` defines `PlanningStep`, `CodingStep`, and `ReviewStep` protocols, with immutable task data classes. `src/codegrinder/adapters/` houses the Codex and Pi implementations. The engine depends on those protocols, not specific agent CLI APIs; `config.py` is the adapter factory/validation boundary.
+
+1. Select the first PR whose dependencies are complete; prepare an isolated Git worktree.
+2. **Plan** using Codex in a read-only sandbox, with the frozen detailed plan authoring guide; validate schema and required plan headings.
+3. **Code** using Pi, restricted by a plan, allowed paths, and a decision matrix. The coding agent cannot create the PR or merge it.
+4. **Verify** changed-file scope and configured deterministic test commands.
+5. **Publish** the branch/PR via GitHub CLI and independently **review** at the frozen commit SHA using Codex.
+6. **Fix up** via Pi when necessary, within a limited budget; repeat verification and review.
+7. **Wait for merge** and required checks. Only GitHub-confirmed merges advance the roadmap.
+
+The entire run is pinned to SHA-256 hashes of the guide, roadmap, and (when present) TOML configuration. Changes to any of those inputs or to the adapter identities between resumptions stop the run for reconciliation. Runtime state, plans, session traces, and logs reside outside the checkout under `${XDG_STATE_HOME:-~/.local/state}/codegrinder/<stable-repo-roadmap-id>/`. A lock blocks concurrent execution of the same workflow.
+
+The roadmap controls manual vs protected auto-merge and specifies required CI check names. See the example's `Merge-Mode` and `Required-Checks`. A missing required CI check never counts as a pass.
+
+## Safety and limitations
+
+- **Unattended operation is not production-validated.** Run a disposable-repository integration pilot before enabling `Merge-Mode: auto`.
+- Codex planning/review use CLI read-only sandboxing, but Pi coding currently runs with the runner's filesystem permissions. Isolate the runner/container and keep GitHub credentials out of the coding agent's environment.
+- The coding agent is instructed not to commit/push, and the controller checks changed paths; this is **not** an OS-level sandbox or credential boundary.
+- Model IDs are checked for format, but actual model availability is provider/account-specific; a model rejected by the underlying harness produces a stop, not substitution.
+- Planning and review outputs are validated; not all semantic requirements can be mechanically verified.
+
+## Tests
+
+```bash
+python -m pip install -e .
+python -m unittest discover -s tests -v
+```
+
+GitHub Actions tests on Python 3.11 and 3.13, including the installed `grind` entry point. Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.

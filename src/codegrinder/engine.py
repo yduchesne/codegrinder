@@ -6,20 +6,23 @@ Run from a trusted Linux / WSL2 environment; see README for security limits.
 """
 from __future__ import annotations
 
-import argparse
 import fcntl
 import fnmatch
 import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+
+from .roadmap import parse_roadmap
+from .interfaces import PlanningStep, CodingStep, ReviewStep, StructuredTask, CodingTask
+from .adapters.codex import CodexAdapterError
+from .adapters.pi import PiAdapterError
 
 ROOT = Path(__file__).resolve().parent
 STAGES = {"PLAN", "CODE", "VERIFY", "PUBLISH", "REVIEW", "FIXUP", "WAIT_MERGE", "DONE", "STOPPED"}
@@ -187,14 +190,30 @@ def single_runner(folder: Path):
 
 
 class Controller:
-    def __init__(self, repo: Path, roadmap: Path, state_dir: Path):
+    def __init__(self, repo: Path, roadmap: Path, state_dir: Path, guide: Path,
+                 *, planner: PlanningStep | None = None,
+                 coder: CodingStep | None = None,
+                 reviewer: ReviewStep | None = None,
+                 configuration_sha256: str | None = None):
+        self.planner, self.coder, self.reviewer = planner, coder, reviewer
+        self.configuration_sha256 = configuration_sha256
+        self.agents = {
+            "plan": planner.identity() if planner else None,
+            "code": coder.identity() if coder else None,
+            "review": reviewer.identity() if reviewer else None,
+        }
         self.repo, self.roadmap, self.state_dir = repo.resolve(), roadmap.resolve(), state_dir.resolve()
+        self.guide = guide.resolve()
         if not (self.repo / ".git").exists():
             # git worktree could be a .git file; this also permits one.
             raise StopWorkflow("REPO_INVALID: path is not a Git checkout")
         if self.repo == self.state_dir or self.repo in self.state_dir.parents:
             raise StopWorkflow("STATE_DIR_INSIDE_REPO: use a separate sibling directory")
-        self.config = load_json(self.roadmap)
+        self.guide_text = self.guide.read_text(encoding="utf-8")
+        if not self.guide_text.strip():
+            raise StopWorkflow("GUIDE_EMPTY: detailed plan authoring guide is empty")
+        self.guide_hash = hashlib.sha256(self.guide.read_bytes()).hexdigest()
+        self.config = parse_roadmap(self.roadmap.read_text(encoding="utf-8"))
         validate_roadmap(self.config)
         self.hash = hashlib.sha256(self.roadmap.read_bytes()).hexdigest()
         self.state_file = self.state_dir / "state.json"
@@ -202,9 +221,19 @@ class Controller:
             self.state = load_json(self.state_file)
             if self.state.get("roadmap_sha256") != self.hash:
                 raise StopWorkflow("ROADMAP_CHANGED: stop and reconcile the roadmap before continuing")
+            if self.state.get("guide_sha256") != self.guide_hash:
+                raise StopWorkflow("GUIDE_CHANGED: stop and reconcile the guide before continuing")
+            if self.state.get("configuration_sha256") != self.configuration_sha256:
+                raise StopWorkflow("CONFIG_CHANGED: stop and reconcile the TOML before continuing")
+            if self.state.get("agents") != self.agents:
+                raise StopWorkflow("AGENT_CONFIG_CHANGED: reconcile agent settings before resuming")
         else:
-            self.state = {"roadmap_sha256": self.hash, "prs": {}, "created_at": utcnow()}
+            self.state = {"roadmap_sha256": self.hash, "guide_sha256": self.guide_hash,
+                          "roadmap_revision": self.config["revision"], "agents": self.agents,
+                          "configuration_sha256": self.configuration_sha256,
+                          "prs": {}, "created_at": utcnow()}
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        self.save()  # pin both input hashes before the first potentially interrupted stage
 
     def save(self):
         atomic_json(self.state_file, self.state)
@@ -252,32 +281,30 @@ class Controller:
             raise StopWorkflow(f"WRONG_BRANCH: worktree does not use {branch}")
         return wt, branch
 
-    def codex(self, wt: Path, pid: str, kind: str, prompt: str, schema: Path) -> dict:
-        output = self.artifact(pid) / (kind + ".json")
-        # --output-schema constrains final assistant output; do not infer success from process exit alone.
-        command = ["codex", "exec", "--sandbox", "read-only", "--output-schema", str(schema),
-                   "-o", str(output), "-"]
-        run(command, wt, stdin=prompt, timeout=self.config["command_timeout_seconds"],
-            output_base=self.artifact(pid) / kind)
-        if not output.exists():
-            raise StopWorkflow(f"CODEX_MISSING_OUTPUT: {kind}")
-        return load_json(output)
+    def _structured(self, adapter, wt: Path, pid: str, kind: str,
+                    prompt: str, schema: Path) -> dict:
+        if adapter is None:
+            raise StopWorkflow(f"AGENT_NOT_CONFIGURED: {kind}")
+        return adapter.execute(StructuredTask(
+            worktree=wt, pr_id=pid, phase=kind, prompt=prompt, schema=schema,
+            artifacts=self.artifact(pid), timeout_seconds=self.config["command_timeout_seconds"],
+        ))
 
-    def pi(self, wt: Path, pid: str, kind: str, prompt: str):
-        filename = self.artifact(pid) / (kind + f"-{self.entry(pid)['fixups']}")
-        model = self.config.get("pi_model", "deepseek/deepseek-v4-pro")
-        command = ["pi", "--mode", "json", "--provider", "deepseek", "--model", model,
-                   "--session-id", f"prflow-{pid}", "--session-dir", str(self.state_dir / "pi-sessions"), prompt]
-        run(command, wt, timeout=self.config["command_timeout_seconds"], output_base=filename)
-        check_pi_events(filename.with_suffix(".stdout"))
+    def _coding(self, wt: Path, pid: str, kind: str, prompt: str) -> None:
+        if self.coder is None:
+            raise StopWorkflow("AGENT_NOT_CONFIGURED: code")
+        self.coder.execute(CodingTask(
+            worktree=wt, pr_id=pid, phase=kind, prompt=prompt,
+            artifacts=self.artifact(pid), state_dir=self.state_dir,
+            fixup_number=self.entry(pid)["fixups"],
+            timeout_seconds=self.config["command_timeout_seconds"],
+        ))
 
     def plan(self, pr: dict, wt: Path):
         pid = pr["id"]
         require_clean(wt)
-        guide = self.config.get("planning_guide", "")
-        if guide and not (wt / guide).is_file():
-            raise StopWorkflow("PLANNING_GUIDE_MISSING: " + guide)
-        prompt = f"""You are the PLANNER, not the implementer. Read and obey the planning guide {guide or '(none)'}.
+        prompt = f"""You are the PLANNER, not the implementer. Read and obey the frozen guide
+identified as {self.guide} (sha256 {self.guide_hash}). Its authoritative text is included below.
 Read relevant repository code, architecture docs and CI contracts. Do not change files or git state.
 Produce a complete autonomous low-reasoning-agent implementation plan with sections EXACTLY:
 ## Scope, ## Steps, ## Tests, ## Decision Matrix, ## Stop Conditions.
@@ -287,7 +314,8 @@ If information is insufficient or conflicts with repository evidence, return BLO
 The JSON final answer must match the supplied schema. Only status READY warrants continuation.
 PR definition:\n{json.dumps(pr, indent=2)}
 Base branch: {self.config['base_branch']}."""
-        data = self.codex(wt, pid, "plan", prompt, ROOT / "schemas" / "plan.schema.json")
+        prompt += f"\n\nFROZEN DETAILED PLAN AUTHORING GUIDE:\n{self.guide_text}"
+        data = self._structured(self.planner, wt, pid, "plan", prompt, ROOT / "schemas" / "plan.schema.json")
         markdown = validate_plan(data)
         (self.artifact(pid) / "plan.md").write_text(markdown + "\n", encoding="utf-8")
         self.transition(pid, "CODE")
@@ -380,7 +408,7 @@ without inspecting observable evidence and relevant implementation. Treat unknow
 Return structured JSON matching schema; verdict PASS only when there are zero findings.
 For CHANGES_REQUIRED, give precise, independently actionable fixes with file paths.
 PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{json.dumps(check_evidence, indent=2)}\nFROZEN PLAN:\n{plan}"""
-        data = self.codex(wt, pid, f"review-{self.entry(pid)['fixups']}", prompt,
+        data = self._structured(self.reviewer, wt, pid, f"review-{self.entry(pid)['fixups']}", prompt,
                           ROOT / "schemas" / "review.schema.json")
         require_clean(wt)
         if git(wt, "rev-parse", "HEAD") != before:
@@ -445,7 +473,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
         if stage == "PLAN":
             self.plan(pr, wt)
         elif stage == "CODE":
-            self.pi(wt, pid, "code", self.coding_prompt(pr, False))
+            self._coding(wt, pid, "code", self.coding_prompt(pr, False))
             self.transition(pid, "VERIFY")
         elif stage == "VERIFY":
             self.verify(pr, wt)
@@ -458,7 +486,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
                 raise StopWorkflow("MAX_FIXUPS_REACHED")
             self.entry(pid)["fixups"] += 1
             self.save()  # idempotent budget: an interrupted attempt consumes one slot
-            self.pi(wt, pid, "fixup", self.coding_prompt(pr, True))
+            self._coding(wt, pid, "fixup", self.coding_prompt(pr, True))
             self.transition(pid, "VERIFY")
         elif stage == "WAIT_MERGE":
             return self.wait_merge(pr, wt)
@@ -479,7 +507,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             return pr
         return None
 
-    def process(self, *, once=False, follow=False, wait_seconds=30, max_wait_minutes=60):
+    def process(self, *, once=False, follow=False, wait_seconds=30, max_wait_minutes=None):
         current = None
         wait_started = None
         while True:
@@ -499,7 +527,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             stage_before = self.entry(pid)["stage"]
             try:
                 moved = self.advance(pr)
-            except (StopWorkflow, subprocess.TimeoutExpired, OSError, ValueError) as e:
+            except (StopWorkflow, CodexAdapterError, PiAdapterError, subprocess.TimeoutExpired, OSError, ValueError) as e:
                 self.stop(pid, f"{type(e).__name__}: {e}")
                 return 2
             if stage_before == "WAIT_MERGE" and not moved:
@@ -507,68 +535,10 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
                     return 3
                 if wait_started is None:
                     wait_started = time.monotonic()
-                if time.monotonic() - wait_started >= max_wait_minutes * 60:
+                if max_wait_minutes is not None and time.monotonic() - wait_started >= max_wait_minutes * 60:
                     print(f"[{pid}] WAIT_BUDGET_EXHAUSTED: resume later; stage is durable")
                     return 3
                 time.sleep(wait_seconds)
             else:
                 wait_started = None
 
-
-def main():
-    os.umask(0o077)
-    ap = argparse.ArgumentParser(description="Sequential, resumable Codex/Pi/GitHub PR workflow")
-    ap.add_argument("command", choices=["run", "status", "unblock", "preflight"])
-    ap.add_argument("--repo", required=True, type=Path)
-    ap.add_argument("--roadmap", default=ROOT / "config" / "roadmap.json", type=Path)
-    ap.add_argument("--state-dir", required=True, type=Path,
-                    help="outside the repository: logs, state, plans, sessions, worktrees")
-    ap.add_argument("--once", action="store_true", help="Stop after one PR is merged")
-    ap.add_argument("--auto-merge", action="store_true", help="Explicitly opt in to GitHub auto-merge for this invocation")
-    ap.add_argument("--follow", action="store_true", help="Poll for pending CI/merge instead of exiting")
-    ap.add_argument("--wait-seconds", type=int, default=30)
-    ap.add_argument("--max-wait-minutes", type=int, default=60)
-    ap.add_argument("--pr-id", help="For unblock: PR ID")
-    ap.add_argument("--stage", choices=["PLAN", "CODE", "VERIFY", "PUBLISH", "REVIEW", "FIXUP", "WAIT_MERGE"],
-                    help="For unblock: explicitly authorized safe restart stage")
-    args = ap.parse_args()
-    try:
-        controller = Controller(args.repo, args.roadmap, args.state_dir)
-        if args.auto_merge:
-            controller.config["merge_mode"] = "auto"
-        if args.command == "preflight":
-            missing = [command for command in ("git", "gh", "codex", "pi", "bash") if not shutil.which(command)]
-            for command in ("git", "gh", "codex", "pi", "bash"):
-                print(f"{command}: {shutil.which(command) or 'MISSING'}")
-            failed = bool(missing)
-            for command in (["gh", "auth", "status"], ["codex", "--version"], ["pi", "--version"]):
-                if not shutil.which(command[0]):
-                    failed = True
-                    continue
-                res = run(command, args.repo, check=False, timeout=30)
-                print(command[0] + " status:", "OK" if res.returncode == 0 else "FAILED")
-                failed |= res.returncode != 0
-            return 2 if failed else 0
-        with single_runner(args.state_dir):
-            if args.command == "status":
-                print(json.dumps({"roadmap_sha256": controller.hash, "prs": controller.state["prs"]}, indent=2))
-                return 0
-            if args.command == "unblock":
-                if not args.pr_id or not args.stage or args.pr_id not in [p["id"] for p in controller.config["prs"]]:
-                    raise StopWorkflow("UNBLOCK_REQUIRES: valid --pr-id and explicit --stage")
-                if controller.entry(args.pr_id)["stage"] != "STOPPED":
-                    raise StopWorkflow("UNBLOCK_REQUIRES_STOPPED_PR")
-                controller.transition(args.pr_id, args.stage, "explicit operator override")
-                controller.entry(args.pr_id).pop("stopped_reason", None)
-                controller.save()
-                return 0
-            if args.wait_seconds < 5 or args.max_wait_minutes < 1:
-                raise StopWorkflow("wait-seconds must be >=5 and max-wait-minutes >=1")
-            return controller.process(once=args.once, follow=args.follow, wait_seconds=args.wait_seconds,
-                                      max_wait_minutes=args.max_wait_minutes)
-    except (StopWorkflow, FileNotFoundError, ValueError) as e:
-        print("STOP: " + str(e), file=sys.stderr)
-        return 2
-
-if __name__ == "__main__":
-    sys.exit(main())

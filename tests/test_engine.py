@@ -4,8 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from prflow import (StopWorkflow, validate_roadmap, validate_plan, validate_review,
+from codegrinder.engine import (StopWorkflow, validate_roadmap, validate_plan, validate_review,
                     validate_paths, check_pi_events, atomic_json)
 
 
