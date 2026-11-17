@@ -422,7 +422,9 @@ class DefaultOrchestrator:
         if isinstance(attempt, dict) and attempt.get("status") == "RUNNING":
             attempt_id = attempt["id"]
             self._update_attempt(pid, launch_state="LAUNCHING")
-            on_process_started = lambda child_pid: self._coding_started(pid, child_pid)
+            def on_started(child_pid: int) -> None:
+                self._coding_started(pid, child_pid)
+            on_process_started = on_started
         try:
             result = adapter.execute(StructuredTask(
                 worktree=wt, pr_id=pid, phase=kind, prompt=prompt, schema=schema,
@@ -457,7 +459,9 @@ class DefaultOrchestrator:
         if isinstance(attempt, dict) and attempt.get("status") == "RUNNING":
             attempt_id = attempt["id"]
             self._update_attempt(pid, launch_state="LAUNCHING")
-            callback = lambda child_pid: self._coding_started(pid, child_pid)
+            def on_started(child_pid: int) -> None:
+                self._coding_started(pid, child_pid)
+            callback = on_started
         self.logs.emit("STEP_START", pr_id=pid, step=kind,
                        state=self.entry(pid)["stage"], disposition="STARTED")
         started = time.monotonic()

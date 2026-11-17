@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import Any
+from typing import Any, NoReturn
 
 from .interfaces import CodingResult
 from .recovery import RecoveryError, process_status, validate_attempt, worktree_snapshot
@@ -18,7 +18,7 @@ class RecoveryCoordinator:
     def __init__(self, orchestrator: Any):
         self.c = orchestrator
 
-    def block(self, pid: str, code: str) -> None:
+    def block(self, pid: str, code: str) -> NoReturn:
         from .engine import StopWorkflow
         record = self.c.entry(pid)["execution"]
         record["recovery"] = {"decision": "MANUAL_REQUIRED", "reason": code}
@@ -58,6 +58,8 @@ class RecoveryCoordinator:
                 data = load_json(path)
             except (OSError, ValueError, TypeError):
                 self.block(pid, "RECOVERY_RESULT_INVALID")
+        if not isinstance(data, dict):
+            self.block(pid, "RECOVERY_RESULT_INVALID")
         try:
             result = CodingResult(**data)
         except (TypeError, ValueError):
