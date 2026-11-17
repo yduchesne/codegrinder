@@ -20,9 +20,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .roadmap import parse_roadmap
-from .interfaces import PlanningStep, CodingStep, ReviewStep, StructuredTask, CodingTask
-from .adapters.codex import CodexAdapterError
-from .adapters.pi import PiAdapterError
+from .interfaces import (
+    AgentExecutionError,
+    PlanningStep,
+    CodingStep,
+    ReviewStep,
+    StructuredTask,
+    CodingTask,
+    WorkflowContext,
+)
+from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
 
 ROOT = Path(__file__).resolve().parent
 STAGES = {"PLAN", "CODE", "VERIFY", "PUBLISH", "REVIEW", "FIXUP", "WAIT_MERGE", "DONE", "STOPPED"}
@@ -81,6 +88,9 @@ def validate_roadmap(config: dict):
             raise StopWorkflow(f"ROADMAP_INVALID: dependencies must refer to earlier roadmap PRs: {pid}")
         if any(p.startswith("/") or ".." in Path(p).parts for p in pr["allowed_paths"]):
             raise StopWorkflow(f"ROADMAP_INVALID: allowed_paths must be relative: {pid}")
+        status = pr.get("status")
+        if status is not None and status not in {"DONE", "PENDING"}:
+            raise StopWorkflow(f"ROADMAP_INVALID: invalid canonical status for {pid}")
         ids.add(pid)
 
 
@@ -191,14 +201,21 @@ def single_runner(folder: Path):
         os.close(fd)
 
 
-class Controller:
-    def __init__(self, repo: Path, roadmap: Path, state_dir: Path, guide: Path,
+class DefaultOrchestrator:
+    """Dependency-injected, sequential PR workflow with durable state."""
+
+    def __init__(self, context: WorkflowContext,
                  *, planner: PlanningStep | None = None,
                  coder: CodingStep | None = None,
                  reviewer: ReviewStep | None = None,
-                 configuration_sha256: str | None = None):
+                 selector: PRSelector | None = None):
+        repo, roadmap, state_dir, guide = (
+            context.repo, context.roadmap, context.state_dir, context.guide
+        )
+        self.context = context
         self.planner, self.coder, self.reviewer = planner, coder, reviewer
-        self.configuration_sha256 = configuration_sha256
+        self.selector = selector if selector is not None else SequentialPRSelector()
+        self.configuration_sha256 = context.configuration_sha256
         self.agents = {
             "plan": planner.identity() if planner else None,
             "code": coder.identity() if coder else None,
@@ -498,16 +515,85 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             raise StopWorkflow("UNKNOWN_STAGE: " + stage)
         return True
 
-    def next_pr(self):
+    def next_pr(self) -> dict | None:
+        """Delegate deterministic selection to the injected PRSelector."""
+        try:
+            return self.selector.next_pr(self.config["prs"], self.state["prs"])
+        except PRSelectionError as exc:
+            raise StopWorkflow(str(exc)) from exc
+
+    def _verified_merge(self, pr: dict) -> dict:
+        """Look up one exact, merged GitHub PR for the deterministic branch."""
+        pid = pr["id"]
+        branch = f"prflow/{pid}"
+        completed = run([
+            "gh", "pr", "list", "--state", "all", "--head", branch,
+            "--json", "number,url,state,mergedAt,baseRefName,headRefName,headRefOid,mergeCommit",
+            "--limit", "100",
+        ], self.repo, timeout=120)
+        try:
+            results = json.loads(completed.stdout)
+        except (TypeError, ValueError) as exc:
+            raise StopWorkflow(f"MERGE_EVIDENCE_INVALID: {pid}") from exc
+        if not isinstance(results, list):
+            raise StopWorkflow(f"MERGE_EVIDENCE_INVALID: {pid}")
+        matches = [item for item in results if isinstance(item, dict)
+                   and item.get("headRefName") == branch]
+        if len(matches) != 1:
+            raise StopWorkflow(f"MERGE_EVIDENCE_AMBIGUOUS_OR_MISSING: {pid}: {len(matches)}")
+        evidence = matches[0]
+        commit = evidence.get("mergeCommit")
+        if (evidence.get("state") != "MERGED" or not evidence.get("mergedAt")
+                or not isinstance(commit, dict) or not commit.get("oid")
+                or not isinstance(evidence.get("number"), int)
+                or not isinstance(evidence.get("url"), str)):
+            raise StopWorkflow(f"PR_NOT_VERIFIED_MERGED: {pid}")
+        if evidence.get("baseRefName") != self.config["base_branch"]:
+            raise StopWorkflow(f"PR_MERGED_TO_WRONG_BASE: {pid}")
+        return evidence
+
+    def reconcile_completed(self) -> None:
+        """Verify completed labels and persisted completions against GitHub.
+
+        A completed Markdown label is never independently trusted. Repeated
+        runs verify the same merge SHA; discrepancies stop before selecting a PR.
+        """
         for pr in self.config["prs"]:
-            ent = self.state["prs"].get(pr["id"], {})
-            if ent.get("stage") == "DONE":
+            pid = pr["id"]
+            ent = self.state["prs"].get(pid)
+            if not is_completed(pr.get("status")) and not (
+                ent is not None and is_completed(ent.get("stage"))
+            ):
                 continue
-            for dep in pr["depends_on"]:
-                if self.state["prs"].get(dep, {}).get("stage") != "DONE":
-                    raise StopWorkflow(f"DEPENDENCY_NOT_DONE: {pr['id']} depends on {dep}")
-            return pr
-        return None
+            evidence = self._verified_merge(pr)
+            if ent is None:
+                ent = self.entry(pid)
+            expected = {
+                "pr_number": evidence["number"],
+                "pr_url": evidence["url"],
+                "merged_at": evidence["mergedAt"],
+                "merge_commit": evidence["mergeCommit"]["oid"],
+            }
+            for key, value in expected.items():
+                if key in ent and ent[key] is not None and ent[key] != value:
+                    raise StopWorkflow(f"MERGE_EVIDENCE_CONFLICT: {pid}: {key}")
+            accepted = ent.get("accepted_head")
+            if accepted is not None and evidence.get("headRefOid") != accepted:
+                raise StopWorkflow(f"MERGE_EVIDENCE_CONFLICT: {pid}: accepted_head")
+            ent.update(expected)
+            if ent.get("stage") != "DONE":
+                self.transition(pid, "DONE", "reconciled verified GitHub merge")
+            else:
+                self.save()
+
+    def run(self) -> int:
+        """Run the full roadmap after reconciling all claimed completions."""
+        try:
+            self.reconcile_completed()
+        except (StopWorkflow, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            print(f"STOP: {exc}", file=sys.stderr)
+            return 2
+        return self.process(follow=True, max_wait_minutes=None)
 
     def process(self, *, once=False, follow=False, wait_seconds=30, max_wait_minutes=None):
         current = None
@@ -529,7 +615,7 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             stage_before = self.entry(pid)["stage"]
             try:
                 moved = self.advance(pr)
-            except (StopWorkflow, CodexAdapterError, PiAdapterError, subprocess.TimeoutExpired, OSError, ValueError) as e:
+            except (StopWorkflow, AgentExecutionError, subprocess.TimeoutExpired, OSError, ValueError) as e:
                 self.stop(pid, f"{type(e).__name__}: {e}")
                 return 2
             if stage_before == "WAIT_MERGE" and not moved:
@@ -544,3 +630,22 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             else:
                 wait_started = None
 
+
+
+class Controller(DefaultOrchestrator):
+    """Compatibility shim for the original four-path constructor.
+
+    New integrations should instantiate DefaultOrchestrator(WorkflowContext(...))
+    with injected phase adapters.
+    """
+
+    def __init__(self, repo: Path, roadmap: Path, state_dir: Path, guide: Path,
+                 *, planner: PlanningStep | None = None,
+                 coder: CodingStep | None = None,
+                 reviewer: ReviewStep | None = None,
+                 configuration_sha256: str | None = None,
+                 selector: PRSelector | None = None):
+        super().__init__(
+            WorkflowContext(repo, roadmap, state_dir, guide, configuration_sha256),
+            planner=planner, coder=coder, reviewer=reviewer, selector=selector,
+        )

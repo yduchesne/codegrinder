@@ -59,11 +59,11 @@ class TestCli(unittest.TestCase):
             guide.write_text("# Design guide\nPredefine each step.\n")
             with (patch.object(cli, "_repo_root", return_value=Path(tmp)),
                   patch.object(cli, "state_directory", return_value=Path(tmp) / "state"),
-                  patch.object(cli, "Controller") as controller):
-                controller.return_value.process.return_value = 0
+                  patch.object(cli, "DefaultOrchestrator") as controller):
+                controller.return_value.run.return_value = 0
                 result = cli.main(["run", "-g", str(guide), "-r", str(SAMPLE)])
                 self.assertEqual(0, result)
-                controller.return_value.process.assert_called_once_with(follow=True, max_wait_minutes=None)
+                controller.return_value.run.assert_called_once_with()
 
     def test_config_only_execution_uses_both_toml_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -78,8 +78,8 @@ class TestCli(unittest.TestCase):
             config.write_text('[plan.guide]\npath = "guide.md"\n[plan.roadmap]\npath = "roadmap.md"\n')
             with (patch.object(cli, "_repo_root", return_value=root),
                   patch.object(cli, "state_directory", return_value=root / "state"),
-                  patch.object(cli, "Controller") as controller):
-                controller.return_value.process.return_value = 0
+                  patch.object(cli, "DefaultOrchestrator") as controller):
+                controller.return_value.run.return_value = 0
                 original_cwd = Path.cwd()
                 try:
                     os.chdir(root)
@@ -87,8 +87,8 @@ class TestCli(unittest.TestCase):
                 finally:
                     os.chdir(original_cwd)
                 self.assertEqual(0, result)
-                self.assertEqual(roadmap.resolve(), controller.call_args.args[1])
-                self.assertEqual(guide.resolve(), controller.call_args.args[3])
+                self.assertEqual(roadmap.resolve(), controller.call_args.kwargs["context"].roadmap)
+                self.assertEqual(guide.resolve(), controller.call_args.kwargs["context"].guide)
 
     def test_each_cli_path_overrides_only_corresponding_toml_path(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -114,16 +114,16 @@ class TestCli(unittest.TestCase):
             for flags, expected_roadmap, expected_guide in cases:
                 with self.subTest(flags=flags), patch.object(cli, "_repo_root", return_value=root), \
                      patch.object(cli, "state_directory", return_value=root / "state"), \
-                     patch.object(cli, "Controller") as controller:
-                    controller.return_value.process.return_value = 0
+                     patch.object(cli, "DefaultOrchestrator") as controller:
+                    controller.return_value.run.return_value = 0
                     original_cwd = Path.cwd()
                     try:
                         os.chdir(root)
                         self.assertEqual(0, cli.main(["run", "--conf", str(config), *flags]))
                     finally:
                         os.chdir(original_cwd)
-                    self.assertEqual(expected_roadmap, controller.call_args.args[1])
-                    self.assertEqual(expected_guide, controller.call_args.args[3])
+                    self.assertEqual(expected_roadmap, controller.call_args.kwargs["context"].roadmap)
+                    self.assertEqual(expected_guide, controller.call_args.kwargs["context"].guide)
 
     def test_relative_cli_flags_use_cwd_with_config_elsewhere(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,11 +141,11 @@ class TestCli(unittest.TestCase):
                 os.chdir(root)
                 with (patch.object(cli, "_repo_root", return_value=root),
                       patch.object(cli, "state_directory", return_value=root / "state"),
-                      patch.object(cli, "Controller") as controller):
-                    controller.return_value.process.return_value = 0
+                      patch.object(cli, "DefaultOrchestrator") as controller):
+                    controller.return_value.run.return_value = 0
                     self.assertEqual(0, cli.main(["--conf", str(config), "run", "-g", "guide.md", "-r", "roadmap.md"]))
-                    self.assertEqual(guide.resolve(), controller.call_args.args[3])
-                    self.assertEqual(roadmap.resolve(), controller.call_args.args[1])
+                    self.assertEqual(guide.resolve(), controller.call_args.kwargs["context"].guide)
+                    self.assertEqual(roadmap.resolve(), controller.call_args.kwargs["context"].roadmap)
             finally:
                 os.chdir(previous)
 
@@ -177,8 +177,8 @@ class TestCli(unittest.TestCase):
             config.write_text('[plan.guide]\npath="missing.md"\n[plan.roadmap]\npath="missing-roadmap.md"\n')
             with (patch.object(cli, "_repo_root", return_value=root),
                   patch.object(cli, "state_directory", return_value=root / "state"),
-                  patch.object(cli, "Controller") as controller):
-                controller.return_value.process.return_value = 0
+                  patch.object(cli, "DefaultOrchestrator") as controller):
+                controller.return_value.run.return_value = 0
                 self.assertEqual(0, cli.main(["run", "--conf", str(config), "-g", str(guide), "-r", str(roadmap)]))
 
     def test_config_change_prohibits_resume(self):

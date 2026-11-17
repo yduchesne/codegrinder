@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import re
 
+from .selection import PRSelectionError, normalize_roadmap_status
+
 
 class RoadmapFormatError(ValueError):
     """Roadmap does not match the documented Markdown contract."""
@@ -16,7 +18,8 @@ _METADATA = {
     "Version", "Roadmap-Revision", "Base-Branch",
     "Command-Timeout-Seconds", "Max-Fixups", "Merge-Mode", "Required-Checks",
 }
-_SECTIONS = {"Goal", "Dependencies", "Acceptance", "Allowed Paths", "Checks"}
+_REQUIRED_SECTIONS = {"Goal", "Dependencies", "Acceptance", "Allowed Paths", "Checks"}
+_SECTIONS = _REQUIRED_SECTIONS | {"Status"}
 _PR_HEADER = re.compile(r"^##\s+(?P<id>[A-Za-z0-9][A-Za-z0-9._-]{0,63}):\s+(?P<title>.+?)\s*$")
 _META_LINE = re.compile(r"^(?P<key>[A-Za-z][A-Za-z-]*):\s*(?P<value>.*?)\s*$")
 
@@ -52,7 +55,7 @@ def parse_roadmap(text: str) -> dict:
     """Return the existing controller's dict contract from a Markdown roadmap.
 
     Headings must use exactly one H1 document title, H2 PR headings, and the
-    five required H3 PR fields. Machine-critical properties are never inferred.
+    five required H3 PR fields (plus optional Status). Machine-critical properties are never inferred.
     """
     if not isinstance(text, str) or not text.strip():
         raise RoadmapFormatError("ROADMAP_INVALID: empty roadmap")
@@ -129,18 +132,38 @@ def parse_roadmap(text: str) -> dict:
                 if raw.startswith("#"):
                     raise RoadmapFormatError(f"ROADMAP_INVALID: unexpected nested heading in {match['id']}")
                 fields[active].append(raw)
-        if set(fields) != _SECTIONS:
-            raise RoadmapFormatError(f"ROADMAP_INVALID: {match['id']} requires fields {sorted(_SECTIONS - set(fields))}")
+        if not _REQUIRED_SECTIONS.issubset(fields):
+            raise RoadmapFormatError(
+                f"ROADMAP_INVALID: {match['id']} requires fields "
+                f"{sorted(_REQUIRED_SECTIONS - set(fields))}"
+            )
         goal = "\n".join(x.strip() for x in fields["Goal"] if x.strip()).strip()
         if not goal or goal.startswith("- "):
             raise RoadmapFormatError(f"ROADMAP_INVALID: {match['id']}: Goal must be prose")
-        prs.append({
+        status: str | None = None
+        if "Status" in fields:
+            lines_for_status = [line.strip() for line in fields["Status"] if line.strip()]
+            if len(lines_for_status) != 1:
+                raise RoadmapFormatError(
+                    f"ROADMAP_INVALID: {match['id']} Status requires exactly one line"
+                )
+            raw_status = lines_for_status[0]
+            if raw_status.startswith("- "):
+                raw_status = raw_status[2:].strip()
+            try:
+                status = normalize_roadmap_status(raw_status)
+            except PRSelectionError as exc:
+                raise RoadmapFormatError(str(exc)) from exc
+        item = {
             "id": match["id"], "title": match["title"], "goal": goal,
             "depends_on": _items(fields["Dependencies"], f"{match['id']} Dependencies", allow_none=True),
             "acceptance": _items(fields["Acceptance"], f"{match['id']} Acceptance"),
             "allowed_paths": _items(fields["Allowed Paths"], f"{match['id']} Allowed Paths"),
             "checks": _items(fields["Checks"], f"{match['id']} Checks"),
-        })
+        }
+        if status is not None:
+            item["status"] = status
+        prs.append(item)
     return {
         "version": 1,
         "revision": meta["Roadmap-Revision"],

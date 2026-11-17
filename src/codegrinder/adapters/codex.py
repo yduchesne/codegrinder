@@ -5,10 +5,10 @@ import json
 import subprocess
 from dataclasses import dataclass
 
-from ..interfaces import StructuredTask
+from ..interfaces import AgentExecutionError, StructuredTask
 
 
-class CodexAdapterError(RuntimeError):
+class CodexAdapterError(AgentExecutionError):
     pass
 
 

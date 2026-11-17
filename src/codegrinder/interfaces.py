@@ -10,6 +10,28 @@ from typing import Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
+class WorkflowContext:
+    """Immutable orchestration inputs. Paths must be resolved by the CLI."""
+
+    repo: Path
+    roadmap: Path
+    state_dir: Path
+    guide: Path
+    configuration_sha256: str | None = None
+
+
+@runtime_checkable
+class Orchestrator(Protocol):
+    """Public contract for an executable, resumable roadmap workflow."""
+
+    def run(self) -> int: ...
+
+
+class AgentExecutionError(RuntimeError):
+    """Shared failure type for pluggable step implementations."""
+
+
+@dataclass(frozen=True)
 class StructuredTask:
     worktree: Path
     pr_id: str

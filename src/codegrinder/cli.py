@@ -8,7 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .engine import Controller, StopWorkflow, single_runner
+from .engine import DefaultOrchestrator, StopWorkflow, single_runner
+from .interfaces import Orchestrator, WorkflowContext
 from .config import load_config, ConfigurationError
 from .roadmap import RoadmapFormatError
 
@@ -71,12 +72,14 @@ def main(argv: list[str] | None = None) -> int:
         planner, coder, reviewer = configuration.adapters()
         state_dir = state_directory(repo, roadmap)
         with single_runner(state_dir):
-            ctrl = Controller(
-                repo, roadmap, state_dir, guide,
-                planner=planner, coder=coder, reviewer=reviewer,
+            context = WorkflowContext(
+                repo=repo, roadmap=roadmap, state_dir=state_dir, guide=guide,
                 configuration_sha256=configuration.sha256,
             )
-            return ctrl.process(follow=True, max_wait_minutes=None)
+            orchestrator: Orchestrator = DefaultOrchestrator(
+                context=context, planner=planner, coder=coder, reviewer=reviewer,
+            )
+            return orchestrator.run()
     except (StopWorkflow, RoadmapFormatError, ConfigurationError, FileNotFoundError, OSError, ValueError) as exc:
         print(f"STOP: {exc}", file=sys.stderr)
         return 2

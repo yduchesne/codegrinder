@@ -83,6 +83,31 @@ Step adapter settings inherit the defaults when omitted. `plan.roadmap` and `pla
 
 Only `codex` is supported for planning/review and `pi` for coding in this first version. Protocols allow additional adapters without redesigning the controller. `grind.toml` may be committed to each target repository to version the agent selections; the tracked `.example` is the public configuration template. Store API credentials in the harnesses' own authenticated mechanisms, **not** in the TOML file.
 
+## Orchestrator and completed-roadmap reconciliation
+
+The public `Orchestrator` protocol exposes `run() -> int`. The default
+`DefaultOrchestrator` receives an immutable `WorkflowContext`, injected
+`PlanningStep`, `CodingStep`, and `ReviewStep` implementations, and an
+optional `PRSelector`. The CLI constructs those dependencies; it does not
+own the lifecycle. The legacy `Controller` remains as a compatibility shim.
+
+`SequentialPRSelector` chooses the first incomplete PR whose declared
+predecessors are complete. The roadmap can optionally include one
+`### Status` field per PR with `pending`, `planned`, `in_progress`,
+`not started`, `DONE`, `complete`, `completed`, or `merged` (case-insensitive,
+with whitespace ignored). Completed aliases normalize to `DONE`; other
+accepted values normalize to `PENDING`.
+
+**Roadmap status is not merge evidence.** Before `grind run` selects work,
+the orchestrator reconciles every roadmap completion label and persisted
+completion with a uniquely matching GitHub PR whose branch is
+`prflow/<PR-ID>`, whose base matches the roadmap, and whose state is
+`MERGED` with a merge timestamp and commit SHA. Missing, ambiguous,
+wrong-base, unmerged, or contradictory evidence triggers a hard stop;
+completion never silently skips unmerged work. Existing in-progress state is
+preserved when a PR is not completed. Roadmap revisions still require
+explicit state reconciliation because input hashes are pinned.
+
 ## Steps and contracts
 
 `src/codegrinder/interfaces.py` defines `PlanningStep`, `CodingStep`, and `ReviewStep` protocols, with immutable task data classes. `src/codegrinder/adapters/` houses the Codex and Pi implementations. The engine depends on those protocols, not specific agent CLI APIs; `config.py` is the adapter factory/validation boundary.

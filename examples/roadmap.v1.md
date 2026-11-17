@@ -11,6 +11,9 @@ Required-Checks:
 
 ## PR-001: Replace with the first real deliverable
 
+### Status
+pending
+
 ### Goal
 Implement the first complete, narrowly scoped deliverable.
 

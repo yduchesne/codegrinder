@@ -5,10 +5,10 @@ import json
 import subprocess
 from dataclasses import dataclass
 
-from ..interfaces import CodingTask
+from ..interfaces import AgentExecutionError, CodingTask
 
 
-class PiAdapterError(RuntimeError):
+class PiAdapterError(AgentExecutionError):
     pass
 
 
