@@ -168,9 +168,10 @@ def explain(
         "",
         "Workflow status (saved checkpoints; read-only)",
         f"  State directory: {state_dir or 'N/A'}",
+        f"  State file: {state_dir / 'state.json' if state_dir else 'N/A'}",
     ])
     state, state_status = _read_state(state_dir)
-    lines.append(f"  Saved state: {state_status}")
+    lines.append(f"  State file status: {state_status}")
     if roadmap is None:
         lines.extend([
             "  Last PR: N/A", "  Last step: N/A", "  Last stage: N/A",

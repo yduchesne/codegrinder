@@ -50,8 +50,11 @@ grind run --conf /path/to/project-agents.toml -g guide.md -r roadmap.md
 `grind explain` is read-only. It displays the resolved TOML configuration,
 per-step adapter/provider/model and reasoning level, roadmap and authoring guide
 paths (or N/A), Git checkout, CLI executable presence, logging destinations,
-and saved execution status. It shows the last PR, last step/checkpoint,
-disposition, and a conservative offline next-PR candidate.
+and saved execution status. It reports the exact `state.json` path even
+when the file is not yet created, displaying `N/A` when a state location
+cannot be determined. The file's status is reported separately. It shows
+the last PR, last step/checkpoint, disposition, and a conservative offline
+next-PR candidate.
 
 ```bash
 grind explain
