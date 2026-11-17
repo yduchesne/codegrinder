@@ -1,4 +1,5 @@
 import json
+import signal
 import subprocess
 import tempfile
 import unittest
@@ -190,10 +191,11 @@ class TestAdapterContracts(unittest.TestCase):
                 root, "PR-1", "review", "prompt", root / "schema.json",
                 root, 2, "PR-1-00000003", bad_callback,
             )
-            with patch("codegrinder.adapters.codex.subprocess.Popen", return_value=child):
+            with patch("codegrinder.adapters.codex.subprocess.Popen", return_value=child), \
+                 patch("codegrinder.adapters.codex.os.killpg") as kill_group:
                 with self.assertRaisesRegex(RuntimeError, "checkpoint store unavailable"):
                     CodexAdapter().execute(task)
-            self.assertTrue(child.terminated)
+            kill_group.assert_called_once_with(44444, signal.SIGTERM)
 
     def test_codex_invocation_is_read_only_high_with_schema(self):
         with tempfile.TemporaryDirectory() as tmp:

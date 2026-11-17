@@ -192,6 +192,34 @@ class TestExplain(unittest.TestCase):
         self.assertIn("Execution status: UNKNOWN (legacy checkpoint)", diagnostic)
         self.assertIn("Next PR: PR-001 (LEGACY_CHECKPOINT_UNSAFE", diagnostic)
 
+    def test_last_attempt_timestamp_is_used_when_no_transition_history_exists(self):
+        self.saved({
+            "PR-001": {
+                "stage": "DONE",
+                "merge_commit": "sha1",
+                "merged_at": "2026-11-16T18:00:00Z",
+                "history": [{
+                    "at": "2026-11-16T18:00:00+00:00",
+                    "from": "WAIT_MERGE", "to": "DONE",
+                }],
+            },
+            "PR-002": {
+                "stage": "PLAN",
+                "history": [],
+                "execution": {
+                    "id": "PR-002-00000001", "stage": "PLAN",
+                    "status": "RUNNING",
+                    "started_at": "2026-11-17T00:00:00+00:00",
+                    "pr_id": "PR-002",
+                },
+            },
+        })
+        report = self.run_explain()
+        self.assertIn("Last PR: PR-002", report)
+        self.assertIn("Attempt: PR-002-00000001", report)
+        self.assertIn("Recovery disposition: N/A", report)
+        self.assertIn("Next PR: PR-002 (RECOVERY_PENDING", report)
+
     def test_invalid_state_is_reported_not_overwritten(self):
         self.state.mkdir(exist_ok=True)
         path = self.state / "state.json"

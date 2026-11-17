@@ -246,6 +246,22 @@ class TestRecovery(unittest.TestCase):
             self.assertNotEqual(first["fingerprint"], second["fingerprint"])
             self.assertTrue(second["dirty"])
 
+    def test_snapshot_rejects_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as source:
+            root = Path(source)
+            (root / "link").symlink_to(Path(outside), target_is_directory=True)
+            (Path(outside) / "file").write_text("private")
+            def fake_git(_wd, *args):
+                if args[0] == "rev-parse":
+                    return "sha"
+                if args[0] == "status":
+                    return " M link/file"
+                if args[0] == "ls-files":
+                    return "link/file\0"
+                return ""
+            with self.assertRaisesRegex(Exception, "RECOVERY_PATH_ESCAPES_WORKTREE"):
+                worktree_snapshot(root, fake_git)
+
     def test_process_identity_ties_pid_to_this_boot(self):
         actual = process_identity(os.getpid())
         if not actual["boot_id"] or not actual["start_ticks"]:
