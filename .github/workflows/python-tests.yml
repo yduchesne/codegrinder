@@ -23,7 +23,7 @@ jobs:
         with:
           go-version: '1.24.11'
       - name: Install project and development dependencies
-        run: uv sync --group dev
+        run: uv sync --locked --group dev
       - name: Install pinned Gitleaks binary for full-history CI scan
         run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
