@@ -47,6 +47,18 @@ class RecoveryCoordinator:
         from .engine import load_json
         data = record.get("result")
         if data is None:
+            history = self.c.entry(pid).get("coding_results", [])
+            if not isinstance(history, list):
+                self.block(pid, "RECOVERY_RESULT_HISTORY_INVALID")
+            matches = [
+                item for item in history if isinstance(item, dict)
+                and item.get("attempt_id") == record["id"]
+            ]
+            if len(matches) > 1:
+                self.block(pid, "RECOVERY_RESULT_AMBIGUOUS")
+            if len(matches) == 1:
+                data = matches[0]
+        if data is None:
             phase = "code" if record["stage"] == "CODE" else "fixup"
             number = self.c.entry(pid).get("fixups", 0)
             path = self.c.artifact(pid) / f"{phase}-{number}-{record['id']}.result.json"
