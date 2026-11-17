@@ -2,6 +2,11 @@
 
 Codegrinder is an installable Python package for executing a **versioned pull-request roadmap** through a deterministic, resumable workflow. It uses pluggable step interfaces: Codex plans, Pi codes, Codex independently reviews; the controller owns PR ordering, Git operations, CI gates, review/fixup cycles, and durable state. The framework is a **pilot**, not production-validated for unsupervised use.
 
+
+## Documentation
+
+For an introduction to the internals, diagrams of the PR lifecycle, injected interfaces/adapters, persistent state, and the crash-recovery decision matrix, see [Architecture](docs/ARCHITECTURE.md). For a complete `grind.toml` reference, configuration-file discovery, and CLI path overrides/fallbacks, see [Configuration](docs/CONFIGURATION.md). For security tooling and SBOM policy, see [Security and SBOM](docs/SECURITY_AND_SBOM.md).
+
 ## Installation
 
 Requires Python 3.14+ and the external `git`, `gh`, `codex`, and `pi` CLIs installed and authenticated on the machine that will execute workflows.
