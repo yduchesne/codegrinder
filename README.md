@@ -4,13 +4,22 @@ Codegrinder is an installable Python package for executing a **versioned pull-re
 
 ## Installation
 
-Requires Python 3.11+ and the external `git`, `gh`, `codex`, and `pi` CLIs installed and authenticated on the machine that will execute workflows.
+Requires Python 3.14+ and the external `git`, `gh`, `codex`, and `pi` CLIs installed and authenticated on the machine that will execute workflows.
 
 ```bash
-python3 -m pip install -e .
-grind --help
-grind run --help
+./install.sh               # Installs uv (if needed), Python 3.14, and dev dependencies
+uv run grind --help
+uv run grind run --help
 ```
+
+`install.sh` also installs the `grind` executable as a global uv tool, so you can
+run it from other Git repositories (ensure `~/.local/bin` is on `PATH`).
+`uv` owns the `.venv` and dependencies; `.python-version` pins the project interpreter
+to Python 3.14. When `uv` is already installed, use `uv python install 3.14`
+followed by `uv sync --group dev`. In CI, the same environment is prepared with
+`astral-sh/setup-uv` and `uv sync --group dev`. For a production deployment,
+review and commit a generated `uv.lock` to freeze dependency resolution.
+
 
 Codegrinder runs from within the target project's Git checkout. The package can be installed once and then invoked from other repositories.
 
@@ -101,8 +110,13 @@ The roadmap controls manual vs protected auto-merge and specifies required CI ch
 ## Tests
 
 ```bash
-python -m pip install -e .
-python -m unittest discover -s tests -v
+uv sync --group dev
+uv run ruff check src tests
+uv run mypy src/codegrinder
+uv run pytest     # Enforces >=85% statement/branch-aware coverage
 ```
 
-GitHub Actions tests on Python 3.11 and 3.13, including the installed `grind` entry point. Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.
+GitHub Actions runs under Python 3.14, verifying the installed `grind`
+entry point, Ruff, mypy, and coverage enforcement. The `pytest` configuration
+fails the build whenever total Codegrinder source coverage falls below 85%.
+ Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.

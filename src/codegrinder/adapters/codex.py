@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass
-from pathlib import Path
 
 from ..interfaces import StructuredTask
 

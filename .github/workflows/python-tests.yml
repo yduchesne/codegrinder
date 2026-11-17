@@ -1,23 +1,27 @@
-name: Python tests
+name: Python quality
 on:
   push:
   pull_request:
+
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.11', '3.13']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install Codegrinder package
-        run: python -m pip install -e .
-      - name: Verify installed grind entry point
+          python-version: '3.14'
+          enable-cache: true
+      - name: Install Python and project dependencies
+        run: uv sync --group dev
+      - name: Verify the installed CLI
         run: |
-          grind --help
-          grind run --help
-      - name: Unit tests
-        run: python -m unittest discover -s tests -v
+          uv run --no-sync grind --help
+          uv run --no-sync grind run --help
+      - name: Ruff lint
+        run: uv run --no-sync ruff check src tests
+      - name: mypy static analysis
+        run: uv run --no-sync mypy src/codegrinder
+      - name: Unit tests and 85 percent minimum coverage
+        run: uv run --no-sync pytest

@@ -1,4 +1,5 @@
 # Python bytecode and caches
+# uv.lock is deliberately tracked when generated (not ignored).
 __pycache__/
 *.py[cod]
 .pytest_cache/

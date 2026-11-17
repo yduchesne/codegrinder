@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Roadmap-driven Codex/Pi/GitHub PR orchestrator (single-repository, sequential).
 
-Requires Python 3.11+, git, gh, codex, pi. Intentionally fail-closed.
+Requires Python 3.14+, git, gh, codex, pi. Intentionally fail-closed.
 Run from a trusted Linux / WSL2 environment; see README for security limits.
 """
 from __future__ import annotations
@@ -50,7 +50,9 @@ def load_json(path: Path):
 def validate_roadmap(config: dict):
     if config.get("version") != 1 or not isinstance(config.get("prs"), list) or not config["prs"]:
         raise StopWorkflow("ROADMAP_INVALID: require version=1 and nonempty prs list")
-    if not re.fullmatch(r"[A-Za-z0-9._/-]+", config.get("base_branch", "")):
+    base_branch = config.get("base_branch", "")
+    if (not isinstance(base_branch, str) or not re.fullmatch(r"[A-Za-z0-9._/-]+", base_branch)
+            or base_branch.startswith("/") or ".." in Path(base_branch).parts):
         raise StopWorkflow("ROADMAP_INVALID: base_branch missing or invalid")
     if config.get("merge_mode", "manual") not in ("manual", "auto"):
         raise StopWorkflow("ROADMAP_INVALID: merge_mode must be manual or auto")
