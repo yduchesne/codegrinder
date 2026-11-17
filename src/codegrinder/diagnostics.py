@@ -68,7 +68,7 @@ def _last_checkpoint(prs: list[dict], entries: dict) -> tuple[str, str, str, str
 
     def last_activity(item: tuple[str, dict]) -> tuple[str, int]:
         pid, entry = item
-        dates = []
+        dates: list[str] = []
         history = entry.get("history")
         if isinstance(history, list):
             dates.extend(event["at"] for event in history
