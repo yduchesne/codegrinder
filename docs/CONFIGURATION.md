@@ -131,7 +131,7 @@ A configured project does not automatically store its workflow progress in `grin
 ${XDG_STATE_HOME:-~/.local/state}/codegrinder/<workflow-id>/state.json
 ```
 
-`<workflow-id>` is a deterministic SHA-256-derived key from the resolved Git repository and resolved roadmap paths. This is why the roadmap location matters: changing `-r` can select a **different** workflow state directory. `grind explain` prints the exact computed path, its file status, and the last known PR/step when available. The sibling `attempts/` journal supports crash recovery; consult [Architecture](ARCHITECTURE.md#restart-and-crash-recovery) for the decision matrix.
+`<workflow-id>` is the **first 20 lowercase hexadecimal characters** (`0`–`9`, `a`–`f`) of the SHA-256 digest of the resolved Git repository path, a newline, and the resolved roadmap path. It is an opaque identifier, never a directory-name slug: it contains **no spaces or uppercase letters** (so whitespace-to-dash replacement is not applicable). This is why the roadmap location matters: changing `-r` can select a **different** workflow state directory. `grind explain` prints the exact computed path, its file status, and the last known PR/step when available. The sibling `attempts/` journal supports crash recovery; consult [Architecture](ARCHITECTURE.md#restart-and-crash-recovery) for the decision matrix.
 
 Operational files default to `<state-dir>/logs/_run/` and `<state-dir>/logs/<PR-ID>/`. Operational logs contain step boundaries, states, dispositions and safe error codes; raw harness stdout/stderr remain separately restricted artifacts. Logging to console and files simultaneously is supported.
 
