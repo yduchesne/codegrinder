@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from scripts import sbom
+from codegrinder import sbom
 
 
 def document() -> dict:
