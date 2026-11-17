@@ -353,7 +353,7 @@ class TestRecovery(unittest.TestCase):
             self.reconcile(resumed)
 
     def test_recover_saved_plan_transition_without_new_agent(self):
-        rec = self.begin("PLAN", launched=True)
+        self.begin("PLAN", launched=True)
         artifact = self.worker.artifact(self.pid) / "plan.md"
         artifact.write_text(
             "## Scope\n" + "Explanation. " * 30
