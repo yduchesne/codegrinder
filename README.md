@@ -194,7 +194,12 @@ arguments, model responses or raw credentials. Original stdout/stderr traces
 remain separately in restricted adapter artifacts and **are not**
 automatically included in operational logs.
 
-Defaults are INFO, 10 MiB per file, 5 rotated backups, and console output.
+Defaults are INFO, 10 MiB per file, 5 rotated backups, and both stdout and
+file logging enabled. The `stdout` and `files` settings are independent.
+Set either to `false` to disable that destination; both cannot be disabled
+simultaneously. Stdout output is intended for terminals and pipeline capture.
+Diagnostic agent stdout/stderr files are separate and never automatically copied
+into operational logs.
 To change them, add the following to `grind.toml` (relative directory paths
 resolve against the current working directory, just like roadmap paths):
 
@@ -204,11 +209,13 @@ directory = "/tmp/codegrinder/my-project"
 level = "INFO"
 max_bytes = 10485760
 backup_count = 5
-console = true
+stdout = true
+files = true
 ```
 
-A configured directory becomes the workflow's log root; Codegrinder creates
-`_run` and PR subfolders under it. Avoid sharing one custom root among
+A configured directory becomes the workflow's log root; when `files = true`,
+Codegrinder creates `_run` and PR subfolders under it. When `files = false`,
+no operational log directories or rotating files are created. Avoid sharing one custom root among
 different roadmap runs without intentionally handling their combined logs.
 Logs are written with file permissions 0600 and per-PR directories 0700.
 Rotating log backups do not delete historical logs from prior invocations:

@@ -99,7 +99,7 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
     log_data = data.get("logging", {})
     if not isinstance(log_data, dict):
         raise ConfigurationError("CONFIG_INVALID: logging must be a TOML table")
-    log_keys = {"directory", "level", "max_bytes", "backup_count", "console"}
+    log_keys = {"directory", "level", "max_bytes", "backup_count", "stdout", "files"}
     if set(log_data) - log_keys:
         raise ConfigurationError(
             f"CONFIG_INVALID: unknown logging keys: {sorted(set(log_data) - log_keys)}"
@@ -120,7 +120,8 @@ def load_config(path: Path | None = None, *, cwd: Path | None = None) -> GrindCo
             level=log_level,
             max_bytes=log_data.get("max_bytes", 10 * 1024 * 1024),
             backup_count=log_data.get("backup_count", 5),
-            console=log_data.get("console", True),
+            stdout=log_data.get("stdout", True),
+            files=log_data.get("files", True),
         )
     except ValueError as exc:
         raise ConfigurationError(f"CONFIG_INVALID: {exc}") from exc

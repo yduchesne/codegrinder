@@ -284,7 +284,6 @@ class DefaultOrchestrator:
         self.save()
         self.logs.emit("STATE_TRANSITION", pr_id=pid, step=old_stage, state=stage,
                        disposition="FAILED" if stage == "STOPPED" else "SUCCEEDED")
-        print(f"[{pid}] -> {stage}" + (f" ({reason})" if reason else ""), flush=True)
 
     def stop(self, pid: str, reason: str):
         self.entry(pid)["stopped_reason"] = reason
@@ -349,12 +348,8 @@ class DefaultOrchestrator:
             if not isinstance(event, CodingProgress) or event.pr_id != pid or event.phase != kind:
                 raise StopWorkflow("CODING_PROGRESS_INVALID")
             # Never print raw tool args, model text or stderr into the run console.
-            display = f"[{pid}] {kind}: {event.event_type}"
-            if event.tool_name:
-                display += f" ({event.tool_name})"
             self.logs.emit("CODING_PROGRESS", pr_id=pid, step=kind,
                            state=self.entry(pid)["stage"], disposition=event.event_type)
-            print(display, flush=True)
 
         self.logs.emit("STEP_START", pr_id=pid, step=kind,
                        state=self.entry(pid)["stage"], disposition="STARTED")
@@ -455,7 +450,6 @@ Base branch: {self.config['base_branch']}."""
         self.save()
         self.logs.emit("STATE_TRANSITION", pr_id=pid, step="review",
                        state="REPLAN", disposition="FAILED")
-        print(f"[{pid}] -> REPLAN ({source}: correction cycle {revision})", flush=True)
 
     def replan(self, pr: dict, wt: Path) -> None:
         """Invoke PlanningStep on the SAME PR using review/check observations."""
@@ -836,8 +830,6 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
             self.logs.emit("STEP_FINISH", step=f"preflight_{phase}",
                            state="PREFLIGHT", disposition="SUCCEEDED",
                            duration_ms=int((time.monotonic()-started)*1000))
-            print(f"PREFLIGHT_PASS: phase={phase} adapter={identity.get('adapter')} "
-                  f"model={identity.get('model')}", flush=True)
 
     def run(self) -> int:
         """Preflight agents, reconcile the roadmap, and run with lifecycle logs."""

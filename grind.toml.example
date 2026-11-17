@@ -15,7 +15,8 @@ path = "docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md"
 level = "INFO"
 max_bytes = 10485760
 backup_count = 5
-console = true
+stdout = true
+files = true
 # directory = "/tmp/codegrinder/my-project"
 
 # Unspecified steps use the defaults below. All model IDs must be valid for

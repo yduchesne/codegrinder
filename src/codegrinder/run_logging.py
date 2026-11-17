@@ -27,7 +27,8 @@ class LoggingSettings:
     level: str = "INFO"
     max_bytes: int = 10 * 1024 * 1024
     backup_count: int = 5
-    console: bool = True
+    stdout: bool = True
+    files: bool = True
 
     def __post_init__(self) -> None:
         if self.level not in {"DEBUG", "INFO", "WARNING", "ERROR"}:
@@ -36,8 +37,12 @@ class LoggingSettings:
             raise ValueError("LOGGING_INVALID_MAX_BYTES")
         if type(self.backup_count) is not int or not 0 <= self.backup_count <= 100:
             raise ValueError("LOGGING_INVALID_BACKUP_COUNT")
-        if type(self.console) is not bool:
-            raise ValueError("LOGGING_INVALID_CONSOLE")
+        if type(self.stdout) is not bool:
+            raise ValueError("LOGGING_INVALID_STDOUT")
+        if type(self.files) is not bool:
+            raise ValueError("LOGGING_INVALID_FILES")
+        if not (self.stdout or self.files):
+            raise ValueError("LOGGING_NO_DESTINATIONS")
 
 
 class _UTCFormatter(logging.Formatter):
@@ -52,7 +57,7 @@ def _token(value: object) -> str:
 
 def safe_error_code(exc: Exception) -> str:
     """Only the leading machine-readable error code; never exception details."""
-    match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?::|\\b)", str(exc))
+    match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?::|\b)", str(exc))
     return match.group(1) if match else type(exc).__name__.upper()[:64]
 
 
@@ -80,24 +85,25 @@ class WorkflowEventLogger:
         label = _token(pr_id) if pr_id is not None else "_run"
         if label in self._loggers:
             return self._loggers[label]
-        folder = self.root / label
-        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-        folder.chmod(0o700)
-        filename = folder / self._suffix
-        handler = RotatingFileHandler(
-            filename, maxBytes=self.settings.max_bytes,
-            backupCount=self.settings.backup_count, encoding="utf-8",
-        )
-        filename.chmod(0o600)
-        handler.setFormatter(self._format)
         logger = logging.Logger(
             f"codegrinder.{self.stamp}.{label}", level=getattr(logging, self.settings.level)
         )
         logger.propagate = False
-        logger.addHandler(handler)
-        self._handlers.append(handler)
-        if self.settings.console:
-            stream = logging.StreamHandler(sys.stderr)
+        if self.settings.files:
+            folder = self.root / label
+            folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+            folder.chmod(0o700)
+            filename = folder / self._suffix
+            handler = RotatingFileHandler(
+                filename, maxBytes=self.settings.max_bytes,
+                backupCount=self.settings.backup_count, encoding="utf-8",
+            )
+            filename.chmod(0o600)
+            handler.setFormatter(self._format)
+            logger.addHandler(handler)
+            self._handlers.append(handler)
+        if self.settings.stdout:
+            stream = logging.StreamHandler(sys.stdout)
             stream.setFormatter(self._format)
             logger.addHandler(stream)
             self._handlers.append(stream)
