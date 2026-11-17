@@ -32,6 +32,38 @@ class AgentExecutionError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class PreflightTask:
+    """Preflight context; never includes credentials or a mutable worktree."""
+
+    repo: Path
+    phase: str
+    timeout_seconds: int
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    """Standard adapter-level status without sensitive process output."""
+
+    ok: bool
+    code: str
+
+    @classmethod
+    def passed(cls) -> PreflightResult:
+        return cls(ok=True, code="READY")
+
+    @classmethod
+    def failed(cls, code: str) -> PreflightResult:
+        return cls(ok=False, code=code)
+
+
+@runtime_checkable
+class PreflightCheck(Protocol):
+    """Check the configured harness/model, without changing repository state."""
+
+    def preflight(self, task: PreflightTask) -> PreflightResult: ...
+
+
+@dataclass(frozen=True)
 class StructuredTask:
     worktree: Path
     pr_id: str
@@ -55,21 +87,21 @@ class CodingTask:
 
 
 @runtime_checkable
-class PlanningStep(Protocol):
+class PlanningStep(PreflightCheck, Protocol):
     """Produce a schema-constrained, read-only plan response."""
     def execute(self, task: StructuredTask) -> dict: ...
     def identity(self) -> dict[str, str]: ...
 
 
 @runtime_checkable
-class CodingStep(Protocol):
+class CodingStep(PreflightCheck, Protocol):
     """Execute a frozen plan within the supplied worktree."""
     def execute(self, task: CodingTask) -> None: ...
     def identity(self) -> dict[str, str]: ...
 
 
 @runtime_checkable
-class ReviewStep(Protocol):
+class ReviewStep(PreflightCheck, Protocol):
     """Produce a schema-constrained, read-only review response."""
     def execute(self, task: StructuredTask) -> dict: ...
     def identity(self) -> dict[str, str]: ...

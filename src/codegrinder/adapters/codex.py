@@ -5,7 +5,7 @@ import json
 import subprocess
 from dataclasses import dataclass
 
-from ..interfaces import AgentExecutionError, StructuredTask
+from ..interfaces import AgentExecutionError, PreflightResult, PreflightTask, StructuredTask
 
 
 class CodexAdapterError(AgentExecutionError):
@@ -24,6 +24,46 @@ class CodexAdapter:
 
     def identity(self) -> dict[str, str]:
         return {"adapter": "codex", "model": self.model, "reasoning_effort": self.reasoning_effort}
+
+    def preflight(self, task: PreflightTask) -> PreflightResult:
+        """Verify Codex authentication and the configured model using a read-only probe.
+
+        A successful login alone is insufficient: the model may be unavailable
+        or authorization may expire between authentication and execution.
+        No CLI stderr or credential-bearing output is retained or surfaced.
+        """
+        timeout = max(1, min(task.timeout_seconds, 90))
+        try:
+            auth = subprocess.run(
+                [self.executable, "login", "status"],
+                cwd=task.repo, capture_output=True, text=True,
+                timeout=min(20, timeout), check=False,
+            )
+            if auth.returncode:
+                return PreflightResult.failed("AUTH_NOT_READY")
+            probe = subprocess.run(
+                [
+                    self.executable, "exec", "--ephemeral",
+                    "--sandbox", "read-only", "--model", self.model,
+                    "-c", f"model_reasoning_effort={self.reasoning_effort}",
+                    "-",
+                ],
+                cwd=task.repo,
+                input="Reply with exactly CODEGRINDER_PREFLIGHT_OK. Do not use tools.",
+                capture_output=True, text=True,
+                timeout=timeout, check=False,
+            )
+        except FileNotFoundError:
+            return PreflightResult.failed("HARNESS_NOT_INSTALLED")
+        except subprocess.TimeoutExpired:
+            return PreflightResult.failed("MODEL_PROBE_TIMEOUT")
+        except OSError:
+            return PreflightResult.failed("HARNESS_EXECUTION_FAILED")
+        if probe.returncode:
+            return PreflightResult.failed("MODEL_PROBE_FAILED")
+        if "CODEGRINDER_PREFLIGHT_OK" not in probe.stdout:
+            return PreflightResult.failed("MODEL_PROBE_UNVERIFIED")
+        return PreflightResult.passed()
 
     def execute(self, task: StructuredTask) -> dict:
         task.artifacts.mkdir(parents=True, exist_ok=True)

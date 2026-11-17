@@ -28,6 +28,8 @@ from .interfaces import (
     StructuredTask,
     CodingTask,
     WorkflowContext,
+    PreflightTask,
+    PreflightResult,
 )
 from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
 
@@ -724,11 +726,39 @@ PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{j
                             f"DEPENDENCY_MERGE_CONFLICT: {pid} requires {dependency}"
                         )
 
+    def preflight(self) -> None:
+        """Validate all configured agent/model pairs before starting any PR."""
+        for phase, adapter in (
+            ("plan", self.planner), ("code", self.coder), ("review", self.reviewer)
+        ):
+            if adapter is None or not callable(getattr(adapter, "preflight", None)):
+                raise StopWorkflow(f"ADAPTER_PREFLIGHT_UNSUPPORTED: phase={phase}")
+            identity = adapter.identity()
+            if not isinstance(identity, dict):
+                raise StopWorkflow(f"ADAPTER_IDENTITY_INVALID: phase={phase}")
+            result = adapter.preflight(PreflightTask(
+                repo=self.repo, phase=phase,
+                timeout_seconds=self.config["command_timeout_seconds"],
+            ))
+            if not isinstance(result, PreflightResult):
+                raise StopWorkflow(f"ADAPTER_PREFLIGHT_INVALID: phase={phase}")
+            if not result.ok:
+                # Never include raw harness output, credentials or tokens.
+                safe_code = result.code if re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", result.code) else "UNKNOWN_ERROR"
+                raise StopWorkflow(
+                    f"ADAPTER_PREFLIGHT_FAILED: phase={phase} "
+                    f"adapter={identity.get('adapter', '<unknown>')} "
+                    f"model={identity.get('model', '<unknown>')} reason={safe_code}"
+                )
+            print(f"PREFLIGHT_PASS: phase={phase} adapter={identity.get('adapter')} "
+                  f"model={identity.get('model')}", flush=True)
+
     def run(self) -> int:
-        """Run the full roadmap after reconciling all claimed completions."""
+        """Preflight every configured agent, then reconcile and run the roadmap."""
         try:
+            self.preflight()
             self.reconcile_completed()
-        except (StopWorkflow, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        except (StopWorkflow, AgentExecutionError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
             print(f"STOP: {exc}", file=sys.stderr)
             return 2
         return self.process(follow=True, max_wait_minutes=None)

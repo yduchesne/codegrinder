@@ -1,11 +1,11 @@
-"""Pi CLI coding adapter using a configurable DeepSeek model."""
+"""Pi CLI adapter using the configured provider and model."""
 from __future__ import annotations
 
 import json
 import subprocess
 from dataclasses import dataclass
 
-from ..interfaces import AgentExecutionError, CodingTask
+from ..interfaces import AgentExecutionError, CodingTask, PreflightTask, PreflightResult
 
 
 class PiAdapterError(AgentExecutionError):
@@ -49,6 +49,61 @@ class PiAdapter:
 
     def identity(self) -> dict[str, str]:
         return {"adapter": "pi", "provider": self.provider, "model": self.model, "thinking": self.thinking}
+
+    def preflight(self, task: PreflightTask) -> PreflightResult:
+        """Check auth and run a no-tools, no-session probe on the selected model."""
+        timeout = max(1, min(task.timeout_seconds, 90))
+        try:
+            auth = subprocess.run(
+                [
+                    self.executable, "auth", "check", "--provider", self.provider,
+                    "--model", self.model, "--json",
+                ],
+                cwd=task.repo, capture_output=True, text=True,
+                timeout=min(20, timeout), check=False,
+            )
+            # Status codes: 0 ready; 1 not ready; 2 invalid.
+            # Output is deliberately not logged (it may contain sensitive data).
+            if auth.returncode:
+                return PreflightResult.failed("AUTH_NOT_READY")
+            probe = subprocess.run(
+                [
+                    self.executable, "--mode", "json", "--no-session", "--no-tools",
+                    "--no-extensions", "--no-skills", "--no-context-files",
+                    "--provider", self.provider, "--model", self.model,
+                    "--thinking", self.thinking,
+                    "Reply with exactly CODEGRINDER_PREFLIGHT_OK. Do not use tools.",
+                ],
+                cwd=task.repo, capture_output=True, text=True,
+                timeout=timeout, check=False,
+            )
+        except FileNotFoundError:
+            return PreflightResult.failed("HARNESS_NOT_INSTALLED")
+        except subprocess.TimeoutExpired:
+            return PreflightResult.failed("MODEL_PROBE_TIMEOUT")
+        except OSError:
+            return PreflightResult.failed("HARNESS_EXECUTION_FAILED")
+        if probe.returncode:
+            return PreflightResult.failed("MODEL_PROBE_FAILED")
+        try:
+            validate_pi_events(probe.stdout)
+            assistant = None
+            for line in probe.stdout.splitlines():
+                event = json.loads(line)
+                message = event.get("message") if isinstance(event, dict) else None
+                if event.get("type") == "message_end" and isinstance(message, dict):
+                    if message.get("role") == "assistant":
+                        assistant = message
+            if assistant is None or not any(
+                isinstance(item, dict)
+                and item.get("type") == "text"
+                and "CODEGRINDER_PREFLIGHT_OK" in str(item.get("text", ""))
+                for item in assistant.get("content", [])
+            ):
+                return PreflightResult.failed("MODEL_PROBE_UNVERIFIED")
+        except (PiAdapterError, ValueError, TypeError, AttributeError):
+            return PreflightResult.failed("MODEL_PROBE_INVALID_OUTPUT")
+        return PreflightResult.passed()
 
     def execute(self, task: CodingTask) -> None:
         task.artifacts.mkdir(parents=True, exist_ok=True)
