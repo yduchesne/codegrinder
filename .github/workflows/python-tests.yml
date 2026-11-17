@@ -38,6 +38,34 @@ jobs:
         run: gitleaks git --redact --verbose .
       - name: Unit tests with >=85% coverage
         run: uv run --no-sync pytest
+      - name: Build distributions and smoke-test isolated uv tool installs
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv build --no-sources
+          shopt -s nullglob
+          wheels=(dist/codegrinder-*.whl)
+          sdists=(dist/codegrinder-*.tar.gz)
+          if [[ ${#wheels[@]} -ne 1 || ${#sdists[@]} -ne 1 ]]; then
+            echo "Expected exactly one Codegrinder wheel and source distribution" >&2
+            exit 1
+          fi
+          for format in wheel sdist; do
+            if [[ "$format" == "wheel" ]]; then
+              distribution="${wheels[0]}"
+            else
+              distribution="${sdists[0]}"
+            fi
+            # Each distribution gets a fresh, independent uv tool installation.
+            export UV_TOOL_DIR="${RUNNER_TEMP}/codegrinder-tools-${format}"
+            export UV_TOOL_BIN_DIR="${RUNNER_TEMP}/codegrinder-bin-${format}"
+            uv tool install --python 3.14 --no-sources "$distribution"
+            "${UV_TOOL_BIN_DIR}/grind" --help >/dev/null
+            "${UV_TOOL_BIN_DIR}/grind" run --help >/dev/null
+            "${UV_TOOL_BIN_DIR}/grind" explain --help >/dev/null
+            "${UV_TOOL_DIR}/codegrinder/bin/python" -c 'from importlib.metadata import version; from importlib.resources import files; import codegrinder; assert version("codegrinder") == codegrinder.__version__, "version mismatch"; assert all(files("codegrinder").joinpath("schemas", name).is_file() for name in ("plan.schema.json", "review.schema.json")), "package schemas missing"'
+            echo "Smoke-tested Codegrinder $format from built distribution"
+          done
       - name: Validate generated CycloneDX SBOM
         run: uv run --no-sync python scripts/sbom.py validate --input .artifacts/sbom/codegrinder.cdx.json
       - name: Upload generated uv.lock for dependency review
