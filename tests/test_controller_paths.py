@@ -106,8 +106,21 @@ class ControllerFixture(unittest.TestCase):
         self.assertEqual("code", coder.execute.call_args.args[0].phase)
         self.assertEqual(0, coder.execute.call_args.args[0].fixup_number)
         self.assertIn("FROZEN PLAN", self.controller.coding_prompt(self.pr, False))
-        (self.controller.artifact(self.pid) / "fixup.json").write_text('{"fix":"bug"}')
+        finding = {
+            "id": "F-1", "severity": "high", "file": "src/file.py",
+            "description": "Observed bug", "required_fix": "Repair under revised plan",
+        }
+        self.controller._start_replan(
+            self.pid, source="codex_review", findings=[finding],
+            reviewed_head="mock-head",
+        )
+        with patch.object(engine, "require_clean"), \
+             patch.object(engine, "git", return_value="mock-head"):
+            self.controller.replan(self.pr, self.wt)
+        self.assertEqual("CODE_FIXUP", self.controller.entry(self.pid)["stage"])
         self.assertIn("fix only", self.controller.coding_prompt(self.pr, True).lower())
+        self.assertIn("Observed bug", planner.execute.call_args.args[0].prompt)
+        self.assertEqual("replan-1", planner.execute.call_args.args[0].phase)
 
     def test_verify_passes_and_logs_failing_checks(self):
         changed = {"src/file.py"}
@@ -116,8 +129,9 @@ class ControllerFixture(unittest.TestCase):
         self.assertEqual("PUBLISH", self.controller.entry(self.pid)["stage"])
         with patch.object(engine, "modified_paths", return_value=changed), patch.object(engine, "run", return_value=completed(returncode=4, stderr="failed")):
             self.controller.verify(self.pr, self.wt)
-        self.assertEqual("FIXUP", self.controller.entry(self.pid)["stage"])
-        failure = json.loads((self.controller.artifact(self.pid) / "fixup.json").read_text())
+        self.assertEqual("REPLAN", self.controller.entry(self.pid)["stage"])
+        self.assertEqual(1, self.controller.entry(self.pid)["fixups"])
+        failure = json.loads((self.controller.artifact(self.pid) / "feedback-1.json").read_text())
         self.assertEqual("deterministic_checks", failure["source"])
         self.assertEqual("CHECK-0", failure["findings"][0]["id"])
         with patch.object(engine, "modified_paths", return_value=set()):
@@ -165,8 +179,10 @@ class ControllerFixture(unittest.TestCase):
         with (patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"),
               patch.object(self.controller, "_structured", return_value={"verdict": "CHANGES_REQUIRED", "findings": [finding]})):
             self.controller.review(self.pr, self.wt)
-        self.assertEqual("FIXUP", self.controller.entry(self.pid)["stage"])
-        self.assertEqual("codex_review", json.loads((self.controller.artifact(self.pid) / "fixup.json").read_text())["source"])
+        self.assertEqual("REPLAN", self.controller.entry(self.pid)["stage"])
+        self.assertEqual("codex_review", json.loads(
+            (self.controller.artifact(self.pid) / "feedback-1.json").read_text()
+        )["source"])
         self.controller.entry(self.pid)["published_head"] = "old"
         with patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"):
             with self.assertRaisesRegex(engine.StopWorkflow, "HEAD_CHANGED_SINCE_PUBLISH"):
@@ -226,16 +242,20 @@ class ControllerFixture(unittest.TestCase):
                     self.controller.advance(self.pr)
                     mocked.assert_called_once()
             self.controller.entry(self.pid)["stage"] = "FIXUP"
-            self.controller.entry(self.pid)["fixups"] = 2
-            with self.assertRaisesRegex(engine.StopWorkflow, "MAX_FIXUPS_REACHED"):
+            with self.assertRaisesRegex(engine.StopWorkflow, "LEGACY_FIXUP_REQUIRES_REPLAN"):
                 self.controller.advance(self.pr)
-            self.controller.entry(self.pid)["stage"] = "FIXUP"
-            self.controller.entry(self.pid)["fixups"] = 0
-            (self.controller.artifact(self.pid) / "plan.md").write_text(VALID_PLAN)
-            (self.controller.artifact(self.pid) / "fixup.json").write_text("{}")
-            with patch.object(self.controller, "_coding"):
+            self.controller.entry(self.pid)["stage"] = "REPLAN"
+            with patch.object(self.controller, "replan") as replanner:
                 self.controller.advance(self.pr)
-            self.assertEqual(1, self.controller.entry(self.pid)["fixups"])
+            replanner.assert_called_once()
+            self.controller.entry(self.pid)["stage"] = "CODE_FIXUP"
+            self.controller.entry(self.pid)["fixups"] = 1
+            self.controller.entry(self.pid)["active_plan"] = "plan-fixup-1.md"
+            (self.controller.artifact(self.pid) / "plan-fixup-1.md").write_text(VALID_PLAN)
+            (self.controller.artifact(self.pid) / "feedback-1.json").write_text('{"findings":[{"id":"F1"}]}')
+            with patch.object(self.controller, "_coding") as coder:
+                self.controller.advance(self.pr)
+            coder.assert_called_once()
             self.assertEqual("VERIFY", self.controller.entry(self.pid)["stage"])
             for stage in ("DONE", "STOPPED"):
                 self.controller.entry(self.pid)["stage"] = stage

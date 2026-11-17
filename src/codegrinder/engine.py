@@ -347,7 +347,7 @@ Base branch: {self.config['base_branch']}."""
     def _active_plan(self, pid: str) -> tuple[str, str]:
         """Return the frozen plan selected by the orchestrator, never by a worker."""
         name = self.entry(pid).get("active_plan", "plan.md")
-        if not isinstance(name, str) or not re.fullmatch(r"plan(?:-fixup-[1-9][0-9]*)?\\.md", name):
+        if not isinstance(name, str) or not re.fullmatch(r"plan(?:-fixup-[1-9][0-9]*)?\.md", name):
             raise StopWorkflow(f"PLAN_REFERENCE_INVALID: {pid}")
         file = self.artifact(pid) / name
         if not file.is_file():

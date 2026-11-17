@@ -55,17 +55,21 @@ class FakeCoder:
 
 
 class FakeReviewer:
-    def __init__(self, first_review_requires_changes: bool = True):
+    def __init__(self, first_review_requires_changes: bool = True, failures_for_first_pr: int = 1):
         self.calls: list[StructuredTask] = []
         self.first_review_requires_changes = first_review_requires_changes
+        self.failures_for_first_pr = failures_for_first_pr
 
     def identity(self) -> dict[str, str]:
         return {"adapter": "fake-reviewer"}
 
     def execute(self, task: StructuredTask) -> dict:
         self.calls.append(task)
-        if self.first_review_requires_changes and task.pr_id == "PR-001" and task.phase == "review-0":
-            return {"verdict": "CHANGES_REQUIRED", "findings": [FINDING]}
+        if (self.first_review_requires_changes and task.pr_id == "PR-001"
+                and task.phase.startswith("review-")
+                and int(task.phase.removeprefix("review-")) < self.failures_for_first_pr):
+            return {"verdict": "CHANGES_REQUIRED", "findings": [FINDING],
+                    "summary": "Review found a simulated defect"}
         return {"verdict": "PASS", "findings": [], "summary": "Accepted by fake reviewer"}
 
 
@@ -157,7 +161,13 @@ class TestSimulatedRoadmap(unittest.TestCase):
         ):
             result = self.controller.process(follow=False)
         self.assertEqual(0, result)
-        self.assertEqual(["PR-001", "PR-002"], [t.pr_id for t in self.planner.calls])
+        self.assertEqual(
+            [("PR-001", "plan"), ("PR-001", "replan-1"), ("PR-002", "plan")],
+            [(t.pr_id, t.phase) for t in self.planner.calls],
+        )
+        self.assertIn("Simulated defect", self.planner.calls[1].prompt)
+        self.assertIn("PREVIOUS PLAN", self.planner.calls[1].prompt)
+        self.assertTrue((self.controller.artifact("PR-001") / "plan-fixup-1.md").exists())
         self.assertEqual(
             [("PR-001", "code", 0), ("PR-001", "fixup", 1), ("PR-002", "code", 0)],
             [(t.pr_id, t.phase, t.fixup_number) for t in self.coder.calls],
@@ -172,10 +182,96 @@ class TestSimulatedRoadmap(unittest.TestCase):
         self.assertEqual(1, self.controller.entry("PR-001")["fixups"])
         self.assertIsNone(self.controller.next_pr())
         transitions = [item["to"] for item in self.controller.entry("PR-001")["history"]]
-        self.assertIn("FIXUP", transitions)
+        self.assertIn("REPLAN", transitions)
+        self.assertIn("CODE_FIXUP", transitions)
+        self.assertLess(transitions.index("REPLAN"), transitions.index("CODE_FIXUP"))
         self.assertEqual("DONE", transitions[-1])
         persisted = json.loads((self.state / "state.json").read_text())
         self.assertEqual("DONE", persisted["prs"]["PR-002"]["stage"])
+
+    def test_two_review_rejections_force_two_replans_before_next_pr(self):
+        self.reviewer.failures_for_first_pr = 2
+        with (
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(engine, "git", side_effect=self.mock_git),
+            patch.object(engine, "modified_paths", return_value={"src/file.py"}),
+            patch.object(engine, "require_clean"),
+            patch.object(engine, "run", side_effect=self.mock_run),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(0, self.controller.process(follow=False))
+        self.assertEqual(
+            [("PR-001", "plan"), ("PR-001", "replan-1"),
+             ("PR-001", "replan-2"), ("PR-002", "plan")],
+            [(task.pr_id, task.phase) for task in self.planner.calls],
+        )
+        self.assertEqual(
+            [("PR-001", "code"), ("PR-001", "fixup"),
+             ("PR-001", "fixup"), ("PR-002", "code")],
+            [(task.pr_id, task.phase) for task in self.coder.calls],
+        )
+        self.assertEqual(
+            [("PR-001", "review-0"), ("PR-001", "review-1"),
+             ("PR-001", "review-2"), ("PR-002", "review-0")],
+            [(task.pr_id, task.phase) for task in self.reviewer.calls],
+        )
+        entry = self.controller.entry("PR-001")
+        self.assertEqual(2, entry["fixups"])
+        for number in (1, 2):
+            artifacts = self.controller.artifact("PR-001")
+            self.assertTrue((artifacts / f"plan-fixup-{number}.md").is_file())
+            feedback = json.loads((artifacts / f"feedback-{number}.json").read_text())
+            self.assertEqual("codex_review", feedback["source"])
+            self.assertIn("Simulated defect", self.planner.calls[number].prompt)
+        self.assertEqual("DONE", self.controller.entry("PR-002")["stage"])
+        stages = [item["to"] for item in entry["history"]]
+        self.assertEqual(2, stages.count("REPLAN"))
+        self.assertEqual(2, stages.count("CODE_FIXUP"))
+
+    def test_repeated_review_rejection_stops_before_next_pr(self):
+        self.reviewer.failures_for_first_pr = 3
+        with (
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(engine, "git", side_effect=self.mock_git),
+            patch.object(engine, "modified_paths", return_value={"src/file.py"}),
+            patch.object(engine, "require_clean"),
+            patch.object(engine, "run", side_effect=self.mock_run),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.controller.process(follow=False))
+        self.assertEqual("STOPPED", self.controller.entry("PR-001")["stage"])
+        self.assertIn("MAX_FIXUPS_REACHED", self.controller.entry("PR-001")["stopped_reason"])
+        self.assertEqual(
+            ["plan", "replan-1", "replan-2"],
+            [task.phase for task in self.planner.calls],
+        )
+        self.assertEqual([], [task for task in self.coder.calls if task.pr_id == "PR-002"])
+
+    def test_replanning_blocked_stops_without_another_coding_invocation(self):
+        def planner_with_blocked_revision(task: StructuredTask) -> dict:
+            self.planner.calls.append(task)
+            if task.phase == "replan-1":
+                return {"status": "BLOCKED", "blocker": "review observations conflict"}
+            return {"status": "READY", "plan_markdown": VALID_PLAN}
+
+        with (
+            patch.object(self.planner, "execute", side_effect=planner_with_blocked_revision),
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(engine, "git", side_effect=self.mock_git),
+            patch.object(engine, "modified_paths", return_value={"src/file.py"}),
+            patch.object(engine, "require_clean"),
+            patch.object(engine, "run", side_effect=self.mock_run),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.controller.process(follow=False))
+        self.assertEqual("STOPPED", self.controller.entry("PR-001")["stage"])
+        self.assertEqual(
+            [("PR-001", "code")],
+            [(task.pr_id, task.phase) for task in self.coder.calls],
+        )
+        self.assertNotIn("PR-002", [task.pr_id for task in self.planner.calls])
 
     def test_resume_wait_for_merge_without_rerunning_agents(self):
         self.reviewer.first_review_requires_changes = False

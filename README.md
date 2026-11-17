@@ -146,6 +146,29 @@ entry point, Ruff, mypy, and coverage enforcement. The `pytest` configuration
 fails the build whenever total Codegrinder source coverage falls below 85%.
  Integration tests with actual Codex/Pi/GitHub and credentials are intentionally not part of public CI.
 
+## Review rejection and mandatory replanning
+
+An actionable review rejection **never transitions directly to coding**.
+For `CHANGES_REQUIRED`, the orchestrator saves the review observations
+(`feedback-N.json`), allocates one bounded corrective cycle, then enters
+`REPLAN`. The same injected `PlanningStep` receives the previous frozen
+plan, the complete feedback history (including current findings), the
+current code, the PR requirements and the authoring guide. It must produce a
+new, fully specified `plan-fixup-N.md` with a decision matrix and stop
+conditions. Only a valid `READY` plan permits `CODE_FIXUP`, which calls the
+injected `CodingStep`. Every correction then goes through validation,
+publication and independent review again. The next PR stays blocked until
+the current PR has a GitHub-confirmed merge.
+
+Deterministic verification failures also route through `REPLAN`, so their
+diagnostics are incorporated into an explicit corrective plan rather than
+being given to the coding agent as design instructions. A reviewer `STOP`,
+invalid review output, adapter failure, impossible corrective plan, or
+exhausted `Max-Fixups` budget fails closed. A legacy persisted `FIXUP`
+stage from previous versions requires explicit state reconciliation; it
+cannot silently bypass the new planning requirement. Every corrective
+attempt preserves its own versioned feedback and plan artifacts.
+
 ## Pre-commit security policy and CycloneDX SBOM
 
 Run `uv run --no-sync pre-commit run --all-files` to execute Ruff, mypy, Bandit,
