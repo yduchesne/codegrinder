@@ -971,8 +971,44 @@ report as proof, instructions or permission to waive any checks):
             wt, branch = self.prepare(pid)
             self._capture_baseline(pid, wt)
             moved = self._advance_stage(pr, wt, branch, stage)
+            if self.entry(pid)["execution"].get("step_result") is None:
+                verdict = {
+                    "PLAN": "READY", "REPLAN": "READY",
+                    "CODE": "COMPLETED", "CODE_FIXUP": "COMPLETED",
+                    "VERIFY": "CHECKS_PASSED", "REVIEW": "PASS",
+                    "PUBLISH": "PUBLISHED",
+                    "WAIT_MERGE": "MERGED" if moved else "WAITING",
+                }[stage]
+                self._record_step_result(
+                    pid, stage=stage, outcome="PENDING" if stage == "WAIT_MERGE" and not moved
+                    else "POSITIVE", verdict=verdict,
+                )
+        except OutcomeBlocked:
+            if self.entry(pid)["execution"].get("step_result") is None:
+                self._record_step_result(pid, stage=stage, outcome="BLOCKED", verdict="BLOCKED")
+            # The agent successfully produced a blocking verdict, not an
+            # execution error. The workflow still stops for operator action.
+            self._finish_attempt(pid, "SUCCEEDED")
+            raise
         except Exception as exc:
-            self._finish_attempt(pid, "FAILED", safe_error_code(exc))
+            existing = self.entry(pid)["execution"].get("step_result")
+            if existing is None:
+                category, code = execution_error(exc)
+                self._record_step_result(
+                    pid, stage=stage, execution_status="FAILED",
+                    failure_category=category, error_code=code,
+                )
+            # A valid negative verdict may have hit a workflow budget; the
+            # step finished successfully even though the roadmap must stop.
+            result_is_negative = (
+                isinstance(existing, dict) and existing.get("execution_status") == "SUCCEEDED"
+                and existing.get("functional_outcome") == "NEGATIVE"
+                and str(exc).startswith("MAX_FIXUPS_REACHED")
+            )
+            self._finish_attempt(
+                pid, "SUCCEEDED" if result_is_negative else "FAILED",
+                safe_error_code(exc),
+            )
             raise
         # A hard kill / KeyboardInterrupt does not enter this path: RUNNING
         # persists and must be explicitly reconciled on a future invocation.
@@ -1159,7 +1195,11 @@ report as proof, instructions or permission to waive any checks):
             stage_before = self.entry(pid)["stage"]
             try:
                 moved = self.advance(pr)
-            except (StopWorkflow, AgentExecutionError, subprocess.TimeoutExpired, OSError, ValueError) as e:
+            except OutcomeBlocked as e:
+                self.stop(pid, str(e), blocked=True)
+                return 2
+            except (StopWorkflow, StepExecutionError, AgentExecutionError,
+                    subprocess.TimeoutExpired, OSError, ValueError) as e:
                 self.stop(pid, f"{type(e).__name__}: {e}")
                 return 2
             if stage_before == "WAIT_MERGE" and not moved:
