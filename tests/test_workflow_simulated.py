@@ -182,6 +182,8 @@ class TestSimulatedRoadmap(unittest.TestCase):
         )
         self.assertIn("Simulated defect", self.planner.calls[1].prompt)
         self.assertIn("PREVIOUS PLAN", self.planner.calls[1].prompt)
+        self.assertIn("Review found a simulated defect", self.planner.calls[1].prompt)
+        self.assertIn("required_fix", self.planner.calls[1].prompt)
         self.assertTrue((self.controller.artifact("PR-001") / "plan-fixup-1.md").exists())
         self.assertEqual(
             [("PR-001", "code", 0), ("PR-001", "fixup", 1), ("PR-002", "code", 0)],
