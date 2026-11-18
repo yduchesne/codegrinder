@@ -41,6 +41,7 @@ from .recovery import RecoveryError, process_identity, worktree_snapshot
 from .recovery_runner import RecoveryCoordinator
 from .prompt_templates import augment_prompt
 from .coding_reports import verified_report
+from .step_results import StepResult, StepExecutionError, classify_check_failure, execution_error
 
 ROOT = Path(__file__).resolve().parent
 STAGES = {
@@ -51,6 +52,10 @@ PR_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 class StopWorkflow(Exception):
     pass
+
+
+class OutcomeBlocked(StopWorkflow):
+    """A valid negative or blocking verdict ended execution by policy."""
 
 
 def utcnow():
@@ -164,7 +169,7 @@ def validate_plan(data):
     if not isinstance(data, dict) or data.get("status") not in ("READY", "BLOCKED"):
         raise StopWorkflow("PLAN_SCHEMA_INVALID: bad status")
     if data["status"] == "BLOCKED":
-        raise StopWorkflow("PLANNING_BLOCKED: " + str(data.get("blocker", "unspecified")))
+        raise OutcomeBlocked("PLANNING_BLOCKED: " + str(data.get("blocker", "unspecified")))
     markdown = data.get("plan_markdown", "")
     if not isinstance(markdown, str) or len(markdown) < 300:
         raise StopWorkflow("PLAN_SCHEMA_INVALID: insufficient detailed plan")
@@ -190,7 +195,7 @@ def validate_review(data):
         if f["severity"] not in ("critical", "high", "medium", "low"):
             raise StopWorkflow("REVIEW_SCHEMA_INVALID: unknown severity")
     if data["verdict"] == "STOP":
-        raise StopWorkflow("REVIEW_STOP: " + data.get("summary", "unspecified"))
+        raise OutcomeBlocked("REVIEW_STOP: " + data.get("summary", "unspecified"))
     return data["verdict"], findings
 
 
@@ -292,6 +297,54 @@ class DefaultOrchestrator:
             self.save()
         return self.state["prs"][pid]
 
+    def _record_step_result(
+        self, pid: str, *, outcome: str | None = None, verdict: str | None = None,
+        execution_status: str = "SUCCEEDED", failure_category: str | None = None,
+        error_code: str | None = None,
+    ) -> StepResult:
+        """Durably record separate execution and functional dimensions.
+
+        The entry and the attempt journal carry the same result. Results are
+        keyed by attempt; a retry may not overwrite a different decision.
+        """
+        ent = self.entry(pid)
+        execution = ent.get("execution")
+        running = isinstance(execution, dict) and execution.get("status") == "RUNNING"
+        stage = execution["stage"] if running else ent["stage"]
+        attempt_id = execution["id"] if running else None
+        result = StepResult(
+            stage=stage, step={"PLAN": "plan", "REPLAN": "plan",
+                              "CODE": "code", "CODE_FIXUP": "code",
+                              "REVIEW": "review", "VERIFY": "verify",
+                              "PUBLISH": "publish", "WAIT_MERGE": "wait_merge"}.get(stage, stage.lower()),
+            attempt_id=attempt_id,
+            execution_status=execution_status, functional_outcome=outcome,
+            verdict=verdict, failure_category=failure_category, error_code=error_code,
+        )
+        data = asdict(result)
+        history = ent.setdefault("step_results", [])
+        matching = [item for item in history if item.get("attempt_id") == attempt_id and
+                    item.get("stage") == stage] if attempt_id else []
+        if matching:
+            if len(matching) != 1 or matching[0] != data:
+                raise StopWorkflow("STEP_RESULT_CONFLICT")
+            return result
+        history.append(data)
+        ent["last_step_result"] = data
+        if running:
+            execution["step_result"] = data
+            self._save_attempt(pid)
+        else:
+            self.save()
+        self.logs.emit(
+            "STEP_RESULT", pr_id=pid, step=result.step, state=stage,
+            disposition=result.execution_status, execution_status=result.execution_status,
+            outcome=result.functional_outcome, verdict=result.verdict,
+            failure_category=result.failure_category, error_code=result.error_code,
+            level="ERROR" if execution_status == "FAILED" else "INFO",
+        )
+        return result
+
     def transition(self, pid: str, stage: str, reason: str = ""):
         if stage not in STAGES:
             raise StopWorkflow("INVALID_INTERNAL_STAGE")
@@ -303,11 +356,12 @@ class DefaultOrchestrator:
         self.logs.emit("STATE_TRANSITION", pr_id=pid, step=old_stage, state=stage,
                        disposition="FAILED" if stage == "STOPPED" else "SUCCEEDED")
 
-    def stop(self, pid: str, reason: str):
+    def stop(self, pid: str, reason: str, *, blocked: bool = False):
         self.entry(pid)["stopped_reason"] = reason
         self.transition(pid, "STOPPED", reason)
         self.logs.emit("WORKFLOW_STOPPED", pr_id=pid, state="STOPPED",
-                       disposition="FAILED", level="ERROR",
+                       disposition="BLOCKED" if blocked else "FAILED",
+                       level="WARNING" if blocked else "ERROR",
                        error_code=safe_error_code(StopWorkflow(reason)))
         print("STOP: " + reason, file=sys.stderr, flush=True)
 
