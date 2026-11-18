@@ -300,7 +300,7 @@ class DefaultOrchestrator:
     def _record_step_result(
         self, pid: str, *, outcome: str | None = None, verdict: str | None = None,
         execution_status: str = "SUCCEEDED", failure_category: str | None = None,
-        error_code: str | None = None,
+        error_code: str | None = None, stage: str | None = None,
     ) -> StepResult:
         """Durably record separate execution and functional dimensions.
 
@@ -310,7 +310,7 @@ class DefaultOrchestrator:
         ent = self.entry(pid)
         execution = ent.get("execution")
         running = isinstance(execution, dict) and execution.get("status") == "RUNNING"
-        stage = execution["stage"] if running else ent["stage"]
+        stage = stage or (execution["stage"] if running else ent["stage"])
         attempt_id = execution["id"] if running else None
         result = StepResult(
             stage=stage, step={"PLAN": "plan", "REPLAN": "plan",
@@ -599,10 +599,15 @@ Base branch: {self.config['base_branch']}."""
         plan_path = self.artifact(pid) / "plan.md"
         prompt = self._with_prompts(prompt, step="plan", state="PLAN", pid=pid, generated_plan=plan_path)
         data = self._structured(self.planner, wt, pid, "plan", prompt, ROOT / "schemas" / "plan.schema.json")
-        markdown = validate_plan(data)
+        try:
+            markdown = validate_plan(data)
+        except OutcomeBlocked:
+            self._record_step_result(pid, stage="PLAN", outcome="BLOCKED", verdict="BLOCKED")
+            raise
         plan_path.write_text(markdown + "\n", encoding="utf-8")
         self.entry(pid)["active_plan"] = "plan.md"
         self.save()
+        self._record_step_result(pid, stage="PLAN", outcome="POSITIVE", verdict="READY")
         self.transition(pid, "CODE")
 
     def _active_plan(self, pid: str) -> tuple[str, str]:
@@ -649,8 +654,8 @@ Base branch: {self.config['base_branch']}."""
         })
         ent["stage"] = "REPLAN"
         self.save()
-        self.logs.emit("STATE_TRANSITION", pr_id=pid, step="review",
-                       state="REPLAN", disposition="FAILED")
+        self.logs.emit("STATE_TRANSITION", pr_id=pid, step="replan",
+                       state="REPLAN", disposition="NEGATIVE")
 
     def replan(self, pr: dict, wt: Path) -> None:
         """Invoke PlanningStep on the SAME PR using review/check observations."""
@@ -712,10 +717,15 @@ AUTHORITATIVE DETAILED PLAN AUTHORING GUIDE:
             self.planner, wt, pid, f"replan-{revision}", prompt,
             ROOT / "schemas" / "plan.schema.json",
         )
-        markdown = validate_plan(result)
+        try:
+            markdown = validate_plan(result)
+        except OutcomeBlocked:
+            self._record_step_result(pid, stage="REPLAN", outcome="BLOCKED", verdict="BLOCKED")
+            raise
         plan_path.write_text(markdown + "\n", encoding="utf-8")
         ent["active_plan"] = next_name
         self.save()
+        self._record_step_result(pid, stage="REPLAN", outcome="POSITIVE", verdict="READY")
         self.transition(pid, "CODE_FIXUP", f"revised plan {next_name} validated")
 
     def coding_prompt(self, pr: dict, fixup: bool):
@@ -845,17 +855,23 @@ report as proof, instructions or permission to waive any checks):
         require_clean(wt)
         if git(wt, "rev-parse", "HEAD") != before:
             raise StopWorkflow("HEAD_CHANGED_DURING_REVIEW")
-        verdict, findings = validate_review(data)
+        try:
+            verdict, findings = validate_review(data)
+        except OutcomeBlocked:
+            self._record_step_result(pid, stage="REVIEW", outcome="BLOCKED", verdict="STOP")
+            raise
         if verdict == "CHANGES_REQUIRED":
+            self._record_step_result(pid, stage="REVIEW", outcome="NEGATIVE", verdict=verdict)
             self._start_replan(
                 pid, source="codex_review", findings=findings,
                 summary=str(data.get("summary", "")), reviewed_head=before,
             )
             self.logs.emit("STEP_DISPOSITION", pr_id=pid, step="review",
-                           state="REPLAN", disposition="FAILED")
+                           state="REPLAN", disposition="NEGATIVE")
         else:
             self.entry(pid)["accepted_head"] = before
             self.save()
+            self._record_step_result(pid, stage="REVIEW", outcome="POSITIVE", verdict="PASS")
             self.transition(pid, "WAIT_MERGE", "independent Codex review PASS")
             self.logs.emit("STEP_DISPOSITION", pr_id=pid, step="review",
                            state="WAIT_MERGE", disposition="SUCCEEDED")
