@@ -190,8 +190,16 @@ class RecoveryCoordinator:
                 self.block(pid, "RECOVERY_PLAN_EVIDENCE_INVALID")
         if previous in {"CODE", "CODE_FIXUP"}:
             if stage == "VERIFY":
-                if self.completed_coding(pid, record) is None:
+                result = self.completed_coding(pid, record)
+                if result is None:
                     self.block(pid, "RECOVERY_CODING_EVIDENCE_MISSING")
+                ent["latest_coding_attempt"] = record["id"]
+                if not any(
+                    item.get("attempt_id") == record["id"]
+                    for item in ent.get("coding_results", [])
+                ):
+                    ent.setdefault("coding_results", []).append(asdict(result))
+                self.c.save()
             elif not ent.get("active_feedback"):
                 self.block(pid, "RECOVERY_CONTINUATION_FEEDBACK_MISSING")
         if previous == "PUBLISH":
