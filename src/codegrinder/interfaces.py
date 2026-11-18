@@ -110,6 +110,8 @@ class CodingResult:
     stderr_path: str
     progress_path: str
     attempt_id: str | None = None
+    final_report_path: str = ""
+    final_report_sha256: str = ""
 
 
 ProcessCallback = Callable[[int], None]
