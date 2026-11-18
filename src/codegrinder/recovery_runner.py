@@ -49,7 +49,9 @@ class RecoveryCoordinator:
             success = decision in {
                 "COMMITTED_TRANSITION_RECONCILED", "CODING_RESULT_RECONCILED",
                 "PUBLISHED_PR_RECONCILED",
-            }
+            } and not (
+                stage in {"CODE", "CODE_FIXUP"} and self.c.entry(pid)["stage"] == "REPLAN"
+            )
             if success:
                 next_stage = self.c.entry(pid)["stage"]
                 mapping = {
