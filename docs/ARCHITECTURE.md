@@ -72,6 +72,97 @@ A rejection never sends review findings straight to coding. Instead the orchestr
 
 At startup the CLI also runs the adapters' preflights (after restart reconciliation). Codex checks login and makes an ephemeral read-only request with the selected model and reasoning effort. Pi checks authentication and performs a no-tools/no-session model probe, rejecting unexpected provider/model substitution. Errors stop execution. `grind explain` deliberately performs **none** of these agent or GitHub operations.
 
+## Step execution status versus functional outcome
+
+Codegrinder makes a deliberate distinction between **whether a step executed
+reliably** and **what a successfully executed step concluded**. A review that
+finds defects is not a broken review invocation. Conversely, a missing
+executable or an exhausted disk is not evidence that the code is defective.
+
+Each orchestrator stage records a structured `StepResult` containing the stage,
+step name, attempt ID, execution status, functional outcome, native verdict,
+and (only for execution failures/interruptions) an error category and code.
+The results are persisted in the PR's `step_results` history and
+`last_step_result`, with the current attempt's `step_result` also mirrored
+into the durable `state.json`/attempt journal. These values are distinct from
+the **PR stage** (`REVIEW`, `REPLAN`, etc.) and from the attempt journal's
+terminal status (`SUCCEEDED`, `FAILED`, `RECOVERED`, `INTERRUPTED`).
+
+| Dimension | Values | Interpretation |
+| --- | --- | --- |
+| Execution status | `SUCCEEDED`, `FAILED`, `INTERRUPTED` | Whether this stage invocation produced a trustworthy result; interrupted attempts have no assumed quality verdict |
+| Functional outcome | `POSITIVE`, `NEGATIVE`, `BLOCKED`, `PENDING` | What an actually completed invocation concluded; **null** for failed/interrupted execution |
+| Native verdict | `READY`, `PASS`, `CHANGES_REQUIRED`, `CHECKS_FAILED`, `STOP`, etc. | Preserves the stage-specific meaning rather than reducing it to a boolean |
+| Failure category | `ENVIRONMENT`, `PROTOCOL`, `CONFIGURATION`, `RECOVERY` | Populated **only** when execution failed or was interrupted, with a sanitized machine-readable error code |
+
+```mermaid
+flowchart TD
+  A["Invoke workflow step"] --> B{"Executed reliably<br/>with validated evidence?"}
+  B -->|no| C["FAILED: classify environment,<br/>protocol, configuration or recovery error"]
+  C --> D["STOP for investigation<br/>no code-quality verdict invented"]
+  B -->|yes| E{"Functional verdict"}
+  E -->|READY / PASS| F["SUCCEEDED + POSITIVE<br/>advance"]
+  E -->|CHANGES_REQUIRED / test failure| G["SUCCEEDED + NEGATIVE<br/>REPLAN through approved correction plan"]
+  E -->|BLOCKED / STOP| H["SUCCEEDED + BLOCKED<br/>controlled workflow stop"]
+  E -->|waiting for merge| I["SUCCEEDED + PENDING<br/>continue waiting"]
+```
+
+### Typical outcomes and transitions
+
+| Stage / condition | Execution status | Outcome / verdict | Action |
+| --- | --- | --- | --- |
+| `PLAN` or `REPLAN`, validated `READY` plan | `SUCCEEDED` | `POSITIVE / READY` | Advance to coding |
+| `PLAN` or `REPLAN`, valid `BLOCKED` response | `SUCCEEDED` | `BLOCKED / BLOCKED` | Stop for operator attention, **not** an adapter malfunction |
+| `CODE`/`CODE_FIXUP`, valid terminal result and final report | `SUCCEEDED` | `POSITIVE / COMPLETED` | Verify implementation; this does **not** certify code quality |
+| `VERIFY`, all checks pass | `SUCCEEDED` | `POSITIVE / CHECKS_PASSED` | Publish |
+| `VERIFY`, trustworthy test assertion failure | `SUCCEEDED` | `NEGATIVE / CHECKS_FAILED` | Persist structured feedback and replan |
+| `REVIEW`, validated `PASS` | `SUCCEEDED` | `POSITIVE / PASS` | Wait for verified merge |
+| `REVIEW`, validated `CHANGES_REQUIRED` | `SUCCEEDED` | `NEGATIVE / CHANGES_REQUIRED` | Persist feedback and replan |
+| `REVIEW`, valid `STOP` | `SUCCEEDED` | `BLOCKED / STOP` | Controlled stop |
+| `WAIT_MERGE`, GitHub PR still open | `SUCCEEDED` | `PENDING / WAITING` | Wait/recheck without claiming completion |
+| Missing command, disk exhaustion, unavailable runner | `FAILED` | No functional outcome; `ENVIRONMENT` | Stop; repair execution environment |
+| Invalid result schema or unclassifiable check failure | `FAILED` | No functional outcome; `PROTOCOL` | Stop; investigate evidence |
+| Interrupted attempt being reconciled | `INTERRUPTED` | No inferred quality verdict; `RECOVERY` | Use the [recovery decision matrix](#recovery-decision-matrix) |
+
+The last item is **not** equivalent to a negative review. A genuine
+`CHANGES_REQUIRED` response may exhaust the configured fixup budget: the
+review's own result remains `SUCCEEDED / NEGATIVE` while the overall workflow
+stops under policy. A successful planner/reviewer call is logged as
+`STEP_FINISH disposition=SUCCEEDED`; its functional verdict is separately
+recorded in `STEP_RESULT` with `execution_status`, `outcome`, and `verdict`.
+The `CHANGES_REQUIRED` transition is logged as `NEGATIVE`, not as a
+failed agent invocation. `FAILED` events carry safe `failure_category`
+and `error_code` fields; raw tool text and credentials are not included.
+
+### Deterministic verification: no automatic blaming of the code
+
+`VERIFY` executes trusted roadmap check commands under `bash -lc`.
+A nonzero exit code **alone** cannot prove a test failed. The check classifier
+first recognizes known infrastructure problems (e.g. missing executables,
+shell exit codes 126/127, process termination, `ENOSPC`/disk full, permissions
+or memory exhaustion), which produce an **environment execution failure**.
+Recognizable assertion/test/linter diagnostics produce a **negative functional
+outcome** and enter `REPLAN`. Unrecognized nonzero results fail closed as
+`VERIFY_CHECK_UNCLASSIFIED` in the `PROTOCOL` category; they never
+automatically authorize the coding agent to change source.
+
+These signatures are deliberately conservative; they are not a semantic
+diagnosis of every shell tool. If a check does not expose recognizable failure
+evidence, the operator must investigate or improve the check contract.
+The orchestrator must not classify infrastructure failures as code defects
+merely to keep the automation running.
+
+### Persistence and crash recovery
+
+A normal attempt writes the structured result before marking its attempt
+terminal. If a crash interrupts a stage, recovery validates the saved result's
+attempt/stage identity and the stage-specific artifacts. Where a committed
+stage transition is independently verified, it can reconstruct the corresponding
+functional result; a partially executed coding step has **no invented positive
+verdict** and remains interrupted. Existing attempt journals retain their
+original `RECOVERED` or `INTERRUPTED` recovery status separately from the
+new `StepResult` execution dimension.
+
 ## Configuration loading and pinning
 
 `cli.py` calls `load_config()` in `config.py`. Without `--conf`, it reads `./grind.toml` in the **current working directory** if present; otherwise built-in agent/logging defaults apply. `--conf PATH` selects a different, **required** TOML file. The loader rejects malformed TOML, unknown keys, unsupported adapters, malformed identifiers, or invalid logging settings. It computes the file's SHA-256 hash when one exists.
