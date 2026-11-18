@@ -207,6 +207,16 @@ class ControllerFixture(unittest.TestCase):
         self.assertEqual("codex_review", json.loads(
             (self.controller.artifact(self.pid) / "feedback-1.json").read_text()
         )["source"])
+        report.write_text("tampered after successful coding", encoding="utf-8")
+        with (
+            patch.object(engine, "git", return_value="abc"),
+            patch.object(engine, "require_clean"),
+            patch.object(self.controller, "_structured") as codex,
+        ):
+            with self.assertRaisesRegex(ValueError, "CODING_REPORT_DIGEST_MISMATCH"):
+                self.controller.review(self.pr, self.wt)
+            codex.assert_not_called()
+        self.assertEqual("REPLAN", self.controller.entry(self.pid)["stage"])
         self.controller.entry(self.pid)["published_head"] = "old"
         with patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"):
             with self.assertRaisesRegex(engine.StopWorkflow, "HEAD_CHANGED_SINCE_PUBLISH"):
