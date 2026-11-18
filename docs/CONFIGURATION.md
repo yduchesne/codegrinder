@@ -135,6 +135,49 @@ ${XDG_STATE_HOME:-~/.local/state}/codegrinder/<workflow-id>/state.json
 
 Operational files default to `<state-dir>/logs/_run/` and `<state-dir>/logs/<PR-ID>/`. Operational logs contain step boundaries, states, dispositions and safe error codes; raw harness stdout/stderr remain separately restricted artifacts. Logging to console and files simultaneously is supported.
 
+## Supplemental prompt templates
+
+Additional prompt instructions are **packaged with Codegrinder**, independently of `grind.toml`. The loader reads `prompts/<step>/` relative to the installed **`codegrinder` Python package root**; in the source tree, this is `src/codegrinder/prompts/<step>/`. This is not a per-project prompt directory and has no `grind.toml` or CLI path override in this version.
+
+```text
+src/codegrinder/prompts/
+├── plan/
+│   ├── general.prompt.txt     # Supplied initial planning instructions
+│   ├── plan/                  # Optional PLAN-only override
+│   │   └── custom.prompt.txt
+│   └── replan/                # Optional REPLAN-only override
+│       └── custom.prompt.txt
+├── code/
+│   ├── general.prompt.txt     # Optional CODE + CODE_FIXUP fallback
+│   └── code_fixup/            # Optional CODE_FIXUP-only override
+│       └── custom.prompt.txt
+└── review/
+    └── general.prompt.txt     # Optional REVIEW instructions
+```
+
+Only `plan/general.prompt.txt` is supplied initially; other entries above illustrate supported customization. **All directory names are lowercase**; state names are lowercased without dropping underscores (`CODE_FIXUP` becomes `code_fixup`). An existing state-specific directory overrides the general step directory **even if empty**. When it does not exist, Codegrinder uses only `*.prompt.txt` files directly under the step directory. Matching filenames are concatenated in lexical order; nested directories and differently suffixed files are ignored. An absent step directory simply adds no supplemental content.
+
+| Variable | Replacement |
+| --- | --- |
+| `{{STATE}}` | Current orchestrator stage, e.g. `PLAN`, `REPLAN`, `CODE_FIXUP` |
+| `{{STEP}}` | Logical step name: `plan`, `code`, `review` |
+| `{{PR_ID}}` | PR identifier **exactly** as parsed from the roadmap (e.g. `BM-01`) |
+| `{{PATH_ROADMAP}}` | Absolute, effective roadmap path after CLI/TOML precedence |
+| `{{PATH_AUTHORING_GUIDE}}` | Absolute, effective authoring-guide path after CLI/TOML precedence |
+| `{{PATH_GENERATED_PLAN}}` | **PLAN/REPLAN only:** absolute output path: `<state-dir>/artifacts/<PR_ID>/plan.md` or `plan-fixup-N.md` |
+
+The last variable refers to the destination **the orchestrator will write after validating the planner's structured response**. Codex remains read-only and does not write this file itself.
+
+For example, a line in `prompts/plan/general.prompt.txt` can say:
+
+```text
+Plan PR {{PR_ID}} in state {{STATE}}.
+Read the authoring guide at {{PATH_AUTHORING_GUIDE}}.
+Return plan_markdown; Codegrinder will save it at {{PATH_GENERATED_PLAN}}.
+```
+
+Existing code-generated prompts (including scope and safety requirements) are preserved, and the selected supplemental templates are appended. Unknown variables, malformed substitutions, invalid file types, oversized files, or unreadable templates **fail closed** before invoking the agent. The files are package data: to change them in a GitHub-installed version, update the package source and reinstall from the intended Git ref; they do not automatically come from the target project's checkout.
+
 ## Strictness and predictable errors
 
 Unknown top-level keys or nested configuration keys, unsupported adapters, invalid model/provider ID syntax, invalid reasoning levels, malformed TOML, and invalid logging settings are refused. Explicit `--conf` pointing to a missing file is an error, but a missing **default** `./grind.toml` is allowed. For `run`, a missing required roadmap/guide or nonexistent selected path is an error. `explain` is more tolerant about missing optional paths because its job is diagnostics, but it still reports invalid configuration.
