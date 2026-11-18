@@ -39,6 +39,7 @@ from .interfaces import (
 from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
 from .recovery import RecoveryError, process_identity, worktree_snapshot
 from .recovery_runner import RecoveryCoordinator
+from .prompt_templates import augment_prompt
 
 ROOT = Path(__file__).resolve().parent
 STAGES = {
@@ -500,6 +501,24 @@ class DefaultOrchestrator:
                        duration_ms=int((time.monotonic()-started)*1000))
         return result
 
+    def _with_prompts(
+        self, baseline: str, *, step: str, state: str, pid: str,
+        generated_plan: Path | None = None,
+    ) -> str:
+        """Append packaged step/state instructions; leave the baseline untouched."""
+        variables = {
+            "STATE": state,
+            "STEP": step,
+            "PR_ID": pid,
+            "PATH_ROADMAP": str(self.roadmap),
+            "PATH_AUTHORING_GUIDE": str(self.guide),
+        }
+        if step == "plan":
+            if generated_plan is None:
+                raise StopWorkflow("PROMPT_PLAN_PATH_REQUIRED")
+            variables["PATH_GENERATED_PLAN"] = str(generated_plan.resolve())
+        return augment_prompt(baseline, step=step, state=state, variables=variables)
+
     def plan(self, pr: dict, wt: Path):
         pid = pr["id"]
         require_clean(wt)
@@ -515,9 +534,11 @@ The JSON final answer must match the supplied schema. Only status READY warrants
 PR definition:\n{json.dumps(pr, indent=2)}
 Base branch: {self.config['base_branch']}."""
         prompt += f"\n\nFROZEN DETAILED PLAN AUTHORING GUIDE:\n{self.guide_text}"
+        plan_path = self.artifact(pid) / "plan.md"
+        prompt = self._with_prompts(prompt, step="plan", state="PLAN", pid=pid, generated_plan=plan_path)
         data = self._structured(self.planner, wt, pid, "plan", prompt, ROOT / "schemas" / "plan.schema.json")
         markdown = validate_plan(data)
-        (self.artifact(pid) / "plan.md").write_text(markdown + "\n", encoding="utf-8")
+        plan_path.write_text(markdown + "\n", encoding="utf-8")
         self.entry(pid)["active_plan"] = "plan.md"
         self.save()
         self.transition(pid, "CODE")
@@ -622,13 +643,15 @@ CURRENT REVIEW/TEST OBSERVATIONS:
 AUTHORITATIVE DETAILED PLAN AUTHORING GUIDE:
 {self.guide_text}
 """
+        next_name = f"plan-fixup-{revision}.md"
+        plan_path = self.artifact(pid) / next_name
+        prompt = self._with_prompts(prompt, step="plan", state="REPLAN", pid=pid, generated_plan=plan_path)
         result = self._structured(
             self.planner, wt, pid, f"replan-{revision}", prompt,
             ROOT / "schemas" / "plan.schema.json",
         )
         markdown = validate_plan(result)
-        next_name = f"plan-fixup-{revision}.md"
-        (self.artifact(pid) / next_name).write_text(markdown + "\n", encoding="utf-8")
+        plan_path.write_text(markdown + "\n", encoding="utf-8")
         ent["active_plan"] = next_name
         self.save()
         self.transition(pid, "CODE_FIXUP", f"revised plan {next_name} validated")
@@ -649,9 +672,12 @@ Leave changed files in this worktree for the orchestrator to validate and commit
             directive += ("\nFix only the findings below, following the revised plan. "
                           "Do not redesign the PR or silently waive findings:\n"
                           + observations.read_text(encoding="utf-8"))
-        return (f"You are the CODING WORKER for {pid}.\n{directive}\n"
-                f"ALLOWED PATHS:\n{json.dumps(pr['allowed_paths'])}\n"
-                f"FROZEN PLAN ({plan_name}):\n{plan}")
+        baseline = (f"You are the CODING WORKER for {pid}.\n{directive}\n"
+                    f"ALLOWED PATHS:\n{json.dumps(pr['allowed_paths'])}\n"
+                    f"FROZEN PLAN ({plan_name}):\n{plan}")
+        return self._with_prompts(
+            baseline, step="code", state="CODE_FIXUP" if fixup else "CODE", pid=pid,
+        )
 
     def verify(self, pr: dict, wt: Path):
         pid = pr["id"]
@@ -727,6 +753,7 @@ without inspecting observable evidence and relevant implementation. Treat unknow
 Return structured JSON matching schema; verdict PASS only when there are zero findings.
 For CHANGES_REQUIRED, give precise, independently actionable fixes with file paths.
 PR:\n{json.dumps(pr, indent=2)}\nLOCAL CHECK EVIDENCE (not proof by itself):\n{json.dumps(check_evidence, indent=2)}\nFROZEN PLAN ({plan_name}):\n{plan}"""
+        prompt = self._with_prompts(prompt, step="review", state="REVIEW", pid=pid)
         data = self._structured(self.reviewer, wt, pid, f"review-{self.entry(pid)['fixups']}", prompt,
                           ROOT / "schemas" / "review.schema.json")
         require_clean(wt)
