@@ -217,6 +217,8 @@ class PiAdapter:
                 settled = event.get("aborted") is False
             if kind == "message_end" and isinstance(event.get("message"), dict):
                 if event["message"].get("role") == "assistant":
+                    if settled:
+                        raise PiAdapterError("PI_MESSAGE_AFTER_SETTLED")
                     assistant = event["message"]
                     record("assistant_message", progress_file)
             elif kind == "tool_execution_start":
@@ -294,9 +296,7 @@ class PiAdapter:
 
         if process.returncode != 0:
             raise PiAdapterError(f"PI_FAILED({process.returncode})")
-        if not settled or assistant is None or assistant.get("stopReason") in {
-            "error", "aborted", "length", "pending", "toolUse",
-        }:
+        if not settled or assistant is None or assistant.get("stopReason") != "stop":
             raise PiAdapterError("PI_INCOMPLETE: missing successful settled assistant")
         if (
             assistant.get("provider") is not None
