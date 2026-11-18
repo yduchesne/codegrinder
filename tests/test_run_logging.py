@@ -38,6 +38,33 @@ class TestLogging(unittest.TestCase):
             self.assertIn("pr=PR-001 step=plan state=PLAN disposition=SUCCEEDED", captured.getvalue())
             self.assertIn("duration_ms=14", captured.getvalue())
 
+    def test_structured_execution_status_and_functional_outcome_are_separate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            logs = WorkflowEventLogger(
+                Path(temp), LoggingSettings(stdout=False, files=True),
+            )
+            logs.emit(
+                "STEP_RESULT", pr_id="PR-001", step="review", state="REVIEW",
+                disposition="SUCCEEDED", execution_status="SUCCEEDED",
+                outcome="NEGATIVE", verdict="CHANGES_REQUIRED",
+            )
+            logs.emit(
+                "STEP_RESULT", pr_id="PR-001", step="verify", state="VERIFY",
+                disposition="FAILED", execution_status="FAILED",
+                failure_category="ENVIRONMENT", error_code="DISK_FULL",
+            )
+            logs.close()
+            recorded = next((Path(temp) / "logs" / "PR-001").glob("*.log")).read_text()
+            self.assertIn(
+                "disposition=SUCCEEDED execution_status=SUCCEEDED outcome=NEGATIVE "
+                "verdict=CHANGES_REQUIRED", recorded,
+            )
+            self.assertIn(
+                "disposition=FAILED error_code=DISK_FULL execution_status=FAILED "
+                "failure_category=ENVIRONMENT", recorded,
+            )
+            self.assertNotIn("outcome=FAILED", recorded)
+
     def test_stdout_only_does_not_create_file_directories(self):
         with tempfile.TemporaryDirectory() as temp:
             state = Path(temp) / "state"
