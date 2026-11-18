@@ -760,17 +760,27 @@ Leave changed files in this worktree for the orchestrator to validate and commit
         failed = []
         for n, check in enumerate(pr["checks"]):
             # Commands are trusted configuration, never model-generated.
-            res = run(["bash", "-lc", check], wt, timeout=self.config["command_timeout_seconds"],
-                      check=False, output_base=self.artifact(pid) / f"check-{n}")
+            try:
+                res = run(["bash", "-lc", check], wt, timeout=self.config["command_timeout_seconds"],
+                          check=False, output_base=self.artifact(pid) / f"check-{n}")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise StepExecutionError("VERIFY_RUNNER_FAILED", "ENVIRONMENT") from exc
             if res.returncode:
+                classification = classify_check_failure(res.returncode, res.stdout, res.stderr)
+                if classification == "ENVIRONMENT":
+                    raise StepExecutionError("VERIFY_ENVIRONMENT_FAILURE", "ENVIRONMENT")
+                if classification == "UNKNOWN":
+                    raise StepExecutionError("VERIFY_CHECK_UNCLASSIFIED", "PROTOCOL")
                 failed.append({"id": f"CHECK-{n}", "severity": "high", "file": "<check>",
                                "description": f"Check failed: {check} (exit {res.returncode})",
                                "required_fix": "Fix underlying issue without weakening the check; inspect check log.",
                                "stderr_tail": res.stderr[-1500:]})
         if failed:
+            self._record_step_result(pid, stage="VERIFY", outcome="NEGATIVE", verdict="CHECKS_FAILED")
             self._start_replan(pid, source="deterministic_checks",
                                findings=failed, summary="Deterministic checks failed")
         else:
+            self._record_step_result(pid, stage="VERIFY", outcome="POSITIVE", verdict="CHECKS_PASSED")
             self.transition(pid, "PUBLISH", "all configured checks passed")
 
     def publish(self, pr: dict, wt: Path, branch: str):
