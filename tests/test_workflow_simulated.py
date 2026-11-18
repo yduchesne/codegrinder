@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from codegrinder import engine
+from codegrinder.coding_reports import persist_report, report_path
 from codegrinder.interfaces import CodingResult, CodingTask, StructuredTask, WorkflowContext
 
 SAMPLE = Path(__file__).resolve().parents[1] / "examples" / "roadmap.v1.md"
@@ -55,8 +56,17 @@ class FakeCoder:
         if task.on_progress:
             from codegrinder.interfaces import CodingProgress
             task.on_progress(CodingProgress(task.pr_id, task.phase, 1, 0.0, "tool_finished", "edit"))
-        return CodingResult(task.pr_id, task.phase, "fake", "fake-model", "COMPLETED",
-                            0, 0.0, 4, 1, 0, None, "", "", "", task.attempt_id or None)
+        report = report_path(
+            task.artifacts, phase=task.phase,
+            fixup_number=task.fixup_number, attempt_id=task.attempt_id,
+        )
+        text = f"Final implementation report for {task.pr_id}: phase={task.phase}, revision={task.fixup_number}"
+        digest = persist_report(report, text)
+        return CodingResult(
+            task.pr_id, task.phase, "fake", "fake-model", "COMPLETED",
+            0, 0.0, 4, 1, 0, None, "", "", "", task.attempt_id or None,
+            str(report), digest,
+        )
 
 
 class FakeReviewer:
@@ -182,6 +192,16 @@ class TestSimulatedRoadmap(unittest.TestCase):
             [(t.pr_id, t.phase) for t in self.reviewer.calls],
         )
         self.assertEqual(["PR-001", "PR-001", "PR-002"], self.published)
+        self.assertIn(
+            "Final implementation report for PR-001: phase=code, revision=0",
+            self.reviewer.calls[0].prompt,
+        )
+        self.assertIn(
+            "Final implementation report for PR-001: phase=fixup, revision=1",
+            self.reviewer.calls[1].prompt,
+        )
+        self.assertNotIn("phase=code, revision=0", self.reviewer.calls[1].prompt)
+        self.assertIn("UNTRUSTED CODING AGENT FINAL REPORT", self.reviewer.calls[1].prompt)
         self.assertEqual("DONE", self.controller.entry("PR-001")["stage"])
         self.assertEqual("DONE", self.controller.entry("PR-002")["stage"])
         self.assertEqual(1, self.controller.entry("PR-001")["fixups"])
