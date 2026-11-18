@@ -194,6 +194,68 @@ class TestSimulatedRoadmap(unittest.TestCase):
         persisted = json.loads((self.state / "state.json").read_text())
         self.assertEqual("DONE", persisted["prs"]["PR-002"]["stage"])
 
+    def test_prompts_selected_by_step_and_state_during_real_orchestration(self):
+        from codegrinder import prompt_templates
+
+        prompts = Path(self.temp.name) / "package-prompts"
+        for name, body in {
+            "plan/general.prompt.txt": (
+                "GENERAL-{{STATE}}-{{STEP}}-{{PR_ID}}\n"
+                "{{PATH_ROADMAP}}\n{{PATH_AUTHORING_GUIDE}}\n{{PATH_GENERATED_PLAN}}"
+            ),
+            "plan/replan/replan.prompt.txt": "ONLY-REPLAN-{{PR_ID}}-{{PATH_GENERATED_PLAN}}",
+            "code/general.prompt.txt": "GENERAL-CODE-{{STATE}}",
+            "code/code_fixup/override.prompt.txt": "ONLY-FIXUP-{{STATE}}",
+            "review/general.prompt.txt": "GENERAL-REVIEW-{{STATE}}",
+        }.items():
+            file = prompts / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(body, encoding="utf-8")
+
+        with (
+            patch.object(prompt_templates, "PROMPT_ROOT", prompts),
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(engine, "git", side_effect=self.mock_git),
+            patch.object(engine, "modified_paths", return_value={"src/file.py"}),
+            patch.object(engine, "require_clean"),
+            patch.object(engine, "run", side_effect=self.mock_run),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(0, self.controller.process(follow=False))
+
+        initial = self.planner.calls[0].prompt
+        revised = self.planner.calls[1].prompt
+        self.assertIn("GENERAL-PLAN-plan-PR-001", initial)
+        self.assertIn(str(self.roadmap.resolve()), initial)
+        self.assertIn(str(self.guide.resolve()), initial)
+        self.assertIn(str(self.state / "artifacts" / "PR-001" / "plan.md"), initial)
+        self.assertIn("ONLY-REPLAN-PR-001-", revised)
+        self.assertIn(str(self.state / "artifacts" / "PR-001" / "plan-fixup-1.md"), revised)
+        self.assertNotIn("GENERAL-", revised)
+        self.assertIn("GENERAL-CODE-CODE", self.coder.calls[0].prompt)
+        self.assertIn("ONLY-FIXUP-CODE_FIXUP", self.coder.calls[1].prompt)
+        self.assertNotIn("GENERAL-CODE", self.coder.calls[1].prompt)
+        self.assertIn("GENERAL-REVIEW-REVIEW", self.reviewer.calls[0].prompt)
+        self.assertIn("INDEPENDENT READ-ONLY REVIEWER", self.reviewer.calls[0].prompt)
+
+    def test_invalid_supplemental_prompt_blocks_agent_execution(self):
+        from codegrinder import prompt_templates
+
+        prompts = Path(self.temp.name) / "invalid-prompts"
+        prompt_file = prompts / "plan" / "general.prompt.txt"
+        prompt_file.parent.mkdir(parents=True)
+        prompt_file.write_text("Do {{SOMETHING_UNDEFINED}}", encoding="utf-8")
+        with (
+            patch.object(prompt_templates, "PROMPT_ROOT", prompts),
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(engine, "require_clean"),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.controller.process(follow=False))
+        self.assertEqual("STOPPED", self.controller.entry("PR-001")["stage"])
+        self.assertIn("PROMPT_UNKNOWN_VARIABLE", self.controller.entry("PR-001")["stopped_reason"])
+        self.assertEqual([], self.planner.calls)
+
     def test_two_review_rejections_force_two_replans_before_next_pr(self):
         self.reviewer.failures_for_first_pr = 2
         with (
