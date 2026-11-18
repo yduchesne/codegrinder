@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codegrinder import engine
+from codegrinder.coding_reports import persist_report, report_path
 from codegrinder.roadmap import parse_roadmap
 from codegrinder.interfaces import CodingResult
 
@@ -102,9 +103,11 @@ class ControllerFixture(unittest.TestCase):
         self.assertIn("Authoring guide", planner.execute.call_args.args[0].prompt)
         self.assertEqual("plan", planner.execute.call_args.args[0].phase)
         coder = Mock()
+        report = report_path(self.controller.artifact(self.pid), phase="code", fixup_number=0, attempt_id="")
+        digest = persist_report(report, "Coding completed; changes verified by reviewer.")
         coder.execute.return_value = CodingResult(
             self.pid, "code", "mock", "mock-model", "COMPLETED",
-            0, 0.0, 3, 0, 0, None, "", "", "",
+            0, 0.0, 3, 0, 0, None, "", "", "", None, str(report), digest,
         )
         self.controller.coder = coder
         self.controller._coding(self.wt, self.pid, "code", "execute")
@@ -177,11 +180,25 @@ class ControllerFixture(unittest.TestCase):
     def test_review_accepts_or_requests_fixup(self):
         self.controller.entry(self.pid)["published_head"] = "abc"
         (self.controller.artifact(self.pid) / "plan.md").write_text(VALID_PLAN)
+        report = report_path(
+            self.controller.artifact(self.pid), phase="code",
+            fixup_number=0, attempt_id="PR-001-00000001",
+        )
+        digest = persist_report(report, "Coding summary to verify independently.")
+        self.controller.entry(self.pid)["latest_coding_attempt"] = "PR-001-00000001"
+        self.controller.entry(self.pid)["coding_results"] = [
+            CodingResult(
+                self.pid, "code", "mock", "mock-model", "COMPLETED",
+                0, 1.0, 3, 0, 0, None, "", "", "",
+                "PR-001-00000001", str(report), digest,
+            ).__dict__,
+        ]
         with (patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"),
               patch.object(self.controller, "_structured", return_value={"verdict": "PASS", "findings": [], "summary": "done"})):
             self.controller.review(self.pr, self.wt)
         self.assertEqual("WAIT_MERGE", self.controller.entry(self.pid)["stage"])
         self.assertEqual("abc", self.controller.entry(self.pid)["accepted_head"])
+        self.assertIn("Coding summary to verify independently.", self.controller._review_coding_report(self.pid))
         finding = {"id": "F-1", "severity": "medium", "file": "src/file.py", "description": "bug", "required_fix": "patch"}
         with (patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"),
               patch.object(self.controller, "_structured", return_value={"verdict": "CHANGES_REQUIRED", "findings": [finding]})):
