@@ -133,6 +133,8 @@ class WorkflowEventLogger:
         step: str = "workflow", state: str = "UNSPECIFIED",
         disposition: str = "UNSPECIFIED", level: str = "INFO",
         duration_ms: int | None = None, error_code: str | None = None,
+        execution_status: str | None = None, outcome: str | None = None,
+        verdict: str | None = None, failure_category: str | None = None,
     ) -> None:
         fields = (
             f"event={_token(event)} pr={_token(pr_id) if pr_id else '_run'} "
@@ -143,6 +145,14 @@ class WorkflowEventLogger:
             fields += f" duration_ms={max(0, int(duration_ms))}"
         if error_code:
             fields += f" error_code={_token(error_code)}"
+        if execution_status:
+            fields += f" execution_status={_token(execution_status)}"
+        if outcome:
+            fields += f" outcome={_token(outcome)}"
+        if verdict:
+            fields += f" verdict={_token(verdict)}"
+        if failure_category:
+            fields += f" failure_category={_token(failure_category)}"
         logger = self._get(pr_id)
         logger.log(getattr(logging, level), fields)
 
