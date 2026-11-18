@@ -160,6 +160,32 @@ class TestPiStream(unittest.TestCase):
                 self.invoke(FakeProcess(events(content)))
             self.assertFalse((self.task.artifacts / "code-0.result.json").exists())
 
+    def test_assistant_after_settled_or_without_terminal_stop_is_rejected(self):
+        complete = b"".join((
+            line({"type": "message_end", "message": {
+                "role": "assistant", "stopReason": "stop", "model": "test-model",
+                "provider": "test-provider", "content": [{"type": "text", "text": "first report"}],
+            }}),
+            line({"type": "agent_settled", "aborted": False}),
+        ))
+        late = complete + line({"type": "message_end", "message": {
+            "role": "assistant", "stopReason": "stop", "model": "test-model",
+            "provider": "test-provider", "content": [{"type": "text", "text": "late report"}],
+        }})
+        no_stop = b"".join((
+            line({"type": "message_end", "message": {
+                "role": "assistant", "model": "test-model",
+                "provider": "test-provider", "content": [{"type": "text", "text": "unknown status"}],
+            }}),
+            line({"type": "agent_settled", "aborted": False}),
+        ))
+        for raw, code in (
+            (late, "PI_MESSAGE_AFTER_SETTLED"),
+            (no_stop, "PI_INCOMPLETE"),
+        ):
+            with self.subTest(code=code), self.assertRaisesRegex(PiAdapterError, code):
+                self.invoke(FakeProcess(raw))
+
     def test_progress_callback_runs_before_process_exits(self):
         """An agent waiting on progress must not deadlock the adapter."""
         gate = asyncio.Event()
