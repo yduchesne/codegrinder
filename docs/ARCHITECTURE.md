@@ -78,6 +78,18 @@ At startup the CLI also runs the adapters' preflights (after restart reconciliat
 
 The separately resolved roadmap and authoring-guide paths come from `[plan.roadmap].path` and `[plan.guide].path`, overridden individually by `-r/--roadmap` and `-g/--guide`. Both TOML and CLI **relative** paths are relative to the process's current working directory, *not* the configuration file's directory. The CLI constructs `WorkflowContext`, the configured step adapters, and the default orchestrator. The roadmap, guide, configuration hash, and adapter identities are pinned for resumption: conflicting inputs require reconciliation, not implicit acceptance. Details and a complete TOML example are in [Configuration](CONFIGURATION.md).
 
+## Supplemental prompt templates
+
+Each agent phase starts with the **existing orchestrator-generated prompt**. Codegrinder then appends optional, packaged plain-text instructions before calling the adapter. These templates live **inside the Python package**, at `src/codegrinder/prompts/<step>/` in a source checkout (or `codegrinder/prompts/<step>/` in an installed wheel); they are not automatically read from the current target repository.
+
+The step directory names are lowercase: `plan`, `code`, and `review`. A state may override the step-wide prompts with its own lowercase subdirectory; for instance, `PLAN` selects `prompts/plan/plan/` when it exists, while `REPLAN` selects `prompts/plan/replan/`. `CODE_FIXUP` corresponds to `prompts/code/code_fixup/`. The state directory **replaces** step-wide prompts rather than combining with them, even if it contains no matching files. Otherwise, Codegrinder uses matching files immediately inside the step directory.
+
+Only regular `*.prompt.txt` files directly in the selected directory are loaded. Their contents are concatenated in lexicographical filename order and appended to the baseline. Missing directories mean no supplemental content. File names and directory names do not change PR scope or bypass the existing validators. Unknown variables, malformed tokens, unsafe files, or unreadable text stop execution rather than silently omit an instruction.
+
+Supported substitutions include `{{STATE}}`, `{{STEP}}`, `{{PR_ID}}`, `{{PATH_ROADMAP}}`, and `{{PATH_AUTHORING_GUIDE}}`. Planning and replanning also support `{{PATH_GENERATED_PLAN}}`: the absolute destination for `plan.md` or `plan-fixup-N.md` under the workflow state artifacts. Codex receives the destination **as information** and must return the plan through `plan_markdown`; the orchestrator validates and writes the file itself. The bundled `prompts/plan/general.prompt.txt` specifies our low-reasoning-agent planning conventions and benchmarking assumption.
+
+See [Configuration](CONFIGURATION.md#supplemental-prompt-templates) for examples and the variable table.
+
 ## Persistent state: where it lives and why
 
 Codegrinder does **not** keep its operational checkpoint inside the project's Git checkout. On Linux, unless `XDG_STATE_HOME` is defined, its root is:
