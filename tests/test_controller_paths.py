@@ -199,14 +199,8 @@ class ControllerFixture(unittest.TestCase):
         self.assertEqual("WAIT_MERGE", self.controller.entry(self.pid)["stage"])
         self.assertEqual("abc", self.controller.entry(self.pid)["accepted_head"])
         self.assertIn("Coding summary to verify independently.", self.controller._review_coding_report(self.pid))
-        finding = {"id": "F-1", "severity": "medium", "file": "src/file.py", "description": "bug", "required_fix": "patch"}
-        with (patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"),
-              patch.object(self.controller, "_structured", return_value={"verdict": "CHANGES_REQUIRED", "findings": [finding]})):
-            self.controller.review(self.pr, self.wt)
-        self.assertEqual("REPLAN", self.controller.entry(self.pid)["stage"])
-        self.assertEqual("codex_review", json.loads(
-            (self.controller.artifact(self.pid) / "feedback-1.json").read_text()
-        )["source"])
+        # Tampering must be caught before invoking Codex while REVIEW remains
+        # the active step; do not simulate reviewing after REPLAN has begun.
         report.write_text("tampered after successful coding", encoding="utf-8")
         with (
             patch.object(engine, "git", return_value="abc"),
@@ -216,7 +210,15 @@ class ControllerFixture(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "CODING_REPORT_DIGEST_MISMATCH"):
                 self.controller.review(self.pr, self.wt)
             codex.assert_not_called()
+        persist_report(report, "Coding summary to verify independently.")
+        finding = {"id": "F-1", "severity": "medium", "file": "src/file.py", "description": "bug", "required_fix": "patch"}
+        with (patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"),
+              patch.object(self.controller, "_structured", return_value={"verdict": "CHANGES_REQUIRED", "findings": [finding]})):
+            self.controller.review(self.pr, self.wt)
         self.assertEqual("REPLAN", self.controller.entry(self.pid)["stage"])
+        self.assertEqual("codex_review", json.loads(
+            (self.controller.artifact(self.pid) / "feedback-1.json").read_text()
+        )["source"])
         self.controller.entry(self.pid)["published_head"] = "old"
         with patch.object(engine, "git", return_value="abc"), patch.object(engine, "require_clean"):
             with self.assertRaisesRegex(engine.StopWorkflow, "HEAD_CHANGED_SINCE_PUBLISH"):
