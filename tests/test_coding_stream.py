@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import tempfile
 import unittest
@@ -96,9 +97,68 @@ class TestPiStream(unittest.TestCase):
         self.assertEqual(output, Path(result.stdout_path).read_bytes())
         self.assertEqual(b"stderr diagnostic", Path(result.stderr_path).read_bytes())
         self.assertEqual(0o600, Path(result.stdout_path).stat().st_mode & 0o777)
+        self.assertEqual("Sensitive final content", Path(result.final_report_path).read_text())
+        self.assertEqual(
+            hashlib.sha256(b"Sensitive final content").hexdigest(),
+            result.final_report_sha256,
+        )
+        self.assertEqual(0o600, Path(result.final_report_path).stat().st_mode & 0o777)
         self.assertEqual("COMPLETED", json.loads(
             (self.task.artifacts / "code-0.result.json").read_text()
         )["status"])
+
+    def test_uses_only_last_assistant_final_text_not_intermediate_or_tool_output(self):
+        prefix = b"".join((
+            line({"type": "session", "id": "session-123"}),
+            line({"type": "message_end", "message": {
+                "role": "assistant", "stopReason": "toolUse",
+                "content": [{"type": "text", "text": "INTERMEDIATE_MESSAGE_NOT_IN_REPORT"}],
+            }}),
+            line({"type": "tool_execution_end", "toolName": "bash",
+                  "result": "TOOL_OUTPUT_NOT_IN_REPORT"}),
+        ))
+        suffix = b"".join((
+            line({"type": "message_end", "message": {
+                "role": "assistant", "stopReason": "stop", "provider": "test-provider",
+                "model": "test-model",
+                "content": [
+                    {"type": "thinking", "thinking": "THINKING_NOT_IN_REPORT"},
+                    {"type": "text", "text": "Completed implementation."},
+                    {"type": "tool_result", "text": "IGNORED_TOOL_TEXT"},
+                    {"type": "text", "text": "Tests passed."},
+                ],
+            }}),
+            line({"type": "agent_settled", "aborted": False}),
+        ))
+        result = self.invoke(FakeProcess(prefix + suffix))
+        self.assertEqual(
+            "Completed implementation.\\n\\nTests passed.".replace("\\n", "\n"),
+            Path(result.final_report_path).read_text(),
+        )
+        self.assertNotIn("INTERMEDIATE_MESSAGE_NOT_IN_REPORT", Path(result.final_report_path).read_text())
+        self.assertNotIn("TOOL_OUTPUT_NOT_IN_REPORT", Path(result.final_report_path).read_text())
+        self.assertNotIn("THINKING_NOT_IN_REPORT", Path(result.final_report_path).read_text())
+
+    def test_missing_empty_or_malformed_final_report_fails_closed(self):
+        def events(content):
+            return b"".join((
+                line({"type": "agent_start"}),
+                line({"type": "message_end", "message": {
+                    "role": "assistant", "stopReason": "stop", "provider": "test-provider",
+                    "model": "test-model", "content": content,
+                }}),
+                line({"type": "agent_settled", "aborted": False}),
+            ))
+        for content, code in (
+            ([], "CODING_REPORT_EMPTY"),
+            ([{"type": "thinking", "thinking": "private"}], "CODING_REPORT_EMPTY"),
+            ([{"type": "text", "text": "   "}], "CODING_REPORT_EMPTY"),
+            ([{"type": "text", "text": 123}], "CODING_REPORT_CONTENT_INVALID"),
+            ([{"type": "text", "text": "X" * (256 * 1024 + 1)}], "CODING_REPORT_TOO_LARGE"),
+        ):
+            with self.subTest(code=code), self.assertRaisesRegex(PiAdapterError, code):
+                self.invoke(FakeProcess(events(content)))
+            self.assertFalse((self.task.artifacts / "code-0.result.json").exists())
 
     def test_progress_callback_runs_before_process_exits(self):
         """An agent waiting on progress must not deadlock the adapter."""
