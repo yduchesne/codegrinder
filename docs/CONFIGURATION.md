@@ -178,6 +178,34 @@ Return plan_markdown; Codegrinder will save it at {{PATH_GENERATED_PLAN}}.
 
 Existing code-generated prompts (including scope and safety requirements) are preserved, and the selected supplemental templates are appended. Unknown variables, malformed substitutions, invalid file types, oversized files, or unreadable templates **fail closed** before invoking the agent. The files are package data: to change them in a GitHub-installed version, update the package source and reinstall from the intended Git ref; they do not automatically come from the target project's checkout.
 
+## Execution errors versus negative verification outcomes
+
+The roadmap's `Checks` entries are commands run by Codegrinder to validate
+the code. A nonzero command exit is **not automatically** treated as a
+coding defect. The runner classifies recognizable test/assertion/linter
+failures as `SUCCEEDED / NEGATIVE / CHECKS_FAILED`, records actionable
+findings and invokes corrective planning. Known environment failures
+(e.g. command not found, disk exhaustion, permission errors or process
+termination) are `FAILED` execution results with category
+`ENVIRONMENT` and **stop** instead of sending the coding agent to
+redesign. Nonzero commands without clear evidence of either condition
+stop conservatively as `VERIFY_CHECK_UNCLASSIFIED` with category
+`PROTOCOL`.
+
+A check should therefore emit **machine-recognizable failure diagnostics**
+when it rejects the implementation. Bare nonzero exits without
+explanation are unsafe for automated corrective loops. There is no
+`grind.toml` override to force an infrastructure error into a code
+finding; ambiguous conditions require operator intervention or better
+test reporting.
+
+The orchestrator persists the execution status separately from the
+functional outcome for each stage. A valid `REVIEW: CHANGES_REQUIRED` is
+`SUCCEEDED / NEGATIVE`, not an agent execution failure; similarly a valid
+`PLAN: BLOCKED` is `SUCCEEDED / BLOCKED`. See
+[Architecture](ARCHITECTURE.md#step-execution-status-versus-functional-outcome)
+for the full transition matrix and durable step-result contract.
+
 ## Strictness and predictable errors
 
 Unknown top-level keys or nested configuration keys, unsupported adapters, invalid model/provider ID syntax, invalid reasoning levels, malformed TOML, and invalid logging settings are refused. Explicit `--conf` pointing to a missing file is an error, but a missing **default** `./grind.toml` is allowed. For `run`, a missing required roadmap/guide or nonexistent selected path is an error. `explain` is more tolerant about missing optional paths because its job is diagnostics, but it still reports invalid configuration.
