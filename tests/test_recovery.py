@@ -102,6 +102,11 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual("RECOVERED", resumed.entry(self.pid)["execution"]["status"])
         self.assertEqual(1, len(resumed.entry(self.pid)["coding_results"]))
         self.assertEqual(rec["id"], resumed.entry(self.pid)["latest_coding_attempt"])
+        recovered = resumed.entry(self.pid)["last_step_result"]
+        self.assertEqual(("SUCCEEDED", "POSITIVE", "COMPLETED"),
+                         (recovered["execution_status"], recovered["functional_outcome"],
+                          recovered["verdict"]))
+        self.assertEqual(rec["id"], recovered["attempt_id"])
         self.coder.execute.assert_not_called()
 
     def test_completed_result_wrong_attempt_is_rejected(self):
@@ -157,6 +162,10 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual(1, entry["fixups"])
         self.assertEqual("RECOVERED", entry["execution"]["status"])
         self.assertEqual("PARTIAL_CODING_REPLAN", entry["execution"]["recovery"]["decision"])
+        last = entry["last_step_result"]
+        self.assertEqual("INTERRUPTED", last["execution_status"])
+        self.assertIsNone(last["functional_outcome"])
+        self.assertEqual("RECOVERY", last["failure_category"])
         feedback = json.loads((resumed.artifact(self.pid) / "feedback-1.json").read_text())
         self.assertEqual("interrupted_coding", feedback["source"])
         self.assertIn("RECOVERY-001", str(feedback["findings"]))
@@ -203,6 +212,10 @@ class TestRecovery(unittest.TestCase):
         self.reconcile(resumed, snapshot=dict(BASELINE))
         self.assertEqual("PLAN", resumed.entry(self.pid)["stage"])
         self.assertEqual("SAFE_STEP_RETRY", resumed.entry(self.pid)["execution"]["recovery"]["decision"])
+        result = resumed.entry(self.pid)["last_step_result"]
+        self.assertEqual("INTERRUPTED", result["execution_status"])
+        self.assertIsNone(result["functional_outcome"])
+        self.assertEqual("RECOVERY", result["failure_category"])
 
     def test_changed_head_before_coding_recovery_blocks(self):
         self.begin(launched=True)
@@ -437,6 +450,9 @@ class TestRecovery(unittest.TestCase):
         self.reconcile(resumed, snapshot=dict(BASELINE))
         self.assertEqual("RECOVERED", resumed.entry(self.pid)["execution"]["status"])
         self.assertEqual("WAIT_MERGE", resumed.entry(self.pid)["stage"])
+        result = resumed.entry(self.pid)["last_step_result"]
+        self.assertEqual(("SUCCEEDED", "POSITIVE", "PASS"),
+                         (result["execution_status"], result["functional_outcome"], result["verdict"]))
 
     def test_recover_published_stage_with_saved_evidence_and_remote_match(self):
         self.begin("PUBLISH")
