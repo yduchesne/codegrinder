@@ -345,7 +345,7 @@ class DefaultOrchestrator:
         )
         return result
 
-    def transition(self, pid: str, stage: str, reason: str = ""):
+    def transition(self, pid: str, stage: str, reason: str = "", *, disposition: str | None = None):
         if stage not in STAGES:
             raise StopWorkflow("INVALID_INTERNAL_STAGE")
         ent = self.entry(pid)
@@ -354,11 +354,11 @@ class DefaultOrchestrator:
         ent["stage"] = stage
         self.save()
         self.logs.emit("STATE_TRANSITION", pr_id=pid, step=old_stage, state=stage,
-                       disposition="FAILED" if stage == "STOPPED" else "SUCCEEDED")
+                       disposition=disposition or ("FAILED" if stage == "STOPPED" else "SUCCEEDED"))
 
     def stop(self, pid: str, reason: str, *, blocked: bool = False):
         self.entry(pid)["stopped_reason"] = reason
-        self.transition(pid, "STOPPED", reason)
+        self.transition(pid, "STOPPED", reason, disposition="BLOCKED" if blocked else "FAILED")
         self.logs.emit("WORKFLOW_STOPPED", pr_id=pid, state="STOPPED",
                        disposition="BLOCKED" if blocked else "FAILED",
                        level="WARNING" if blocked else "ERROR",
