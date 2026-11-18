@@ -410,6 +410,31 @@ class TestSimulatedRoadmap(unittest.TestCase):
         )
         self.assertEqual([], [task for task in self.coder.calls if task.pr_id == "PR-002"])
 
+    def test_review_stop_is_blocked_outcome_not_execution_failure(self):
+        def stop_review(task: StructuredTask) -> dict:
+            self.reviewer.calls.append(task)
+            return {"verdict": "STOP", "summary": "Manual decision required", "findings": []}
+
+        with (
+            patch.object(self.reviewer, "execute", side_effect=stop_review),
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(engine, "git", side_effect=self.mock_git),
+            patch.object(engine, "modified_paths", return_value={"src/file.py"}),
+            patch.object(engine, "require_clean"),
+            patch.object(engine, "run", side_effect=self.mock_run),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.controller.process(follow=False))
+        entry = self.controller.entry("PR-001")
+        self.assertEqual("STOPPED", entry["stage"])
+        self.assertEqual("SUCCEEDED", entry["execution"]["status"])
+        result = entry["last_step_result"]
+        self.assertEqual(("SUCCEEDED", "BLOCKED", "STOP"),
+                         (result["execution_status"], result["functional_outcome"], result["verdict"]))
+        self.assertIsNone(result["failure_category"])
+        self.assertEqual([], [t for t in self.coder.calls if t.pr_id == "PR-002"])
+
     def test_replanning_blocked_stops_without_another_coding_invocation(self):
         def planner_with_blocked_revision(task: StructuredTask) -> dict:
             self.planner.calls.append(task)
