@@ -207,6 +207,19 @@ class TestSimulatedRoadmap(unittest.TestCase):
         self.assertEqual("DONE", self.controller.entry("PR-001")["stage"])
         self.assertEqual("DONE", self.controller.entry("PR-002")["stage"])
         self.assertEqual(1, self.controller.entry("PR-001")["fixups"])
+        results = self.controller.entry("PR-001")["step_results"]
+        review_verdicts = [
+            (item["execution_status"], item["functional_outcome"], item["verdict"])
+            for item in results if item["stage"] == "REVIEW"
+        ]
+        self.assertEqual(
+            [("SUCCEEDED", "NEGATIVE", "CHANGES_REQUIRED"), ("SUCCEEDED", "POSITIVE", "PASS")],
+            review_verdicts,
+        )
+        self.assertTrue(any(
+            item["stage"] == "VERIFY" and item["functional_outcome"] == "POSITIVE"
+            and item["verdict"] == "CHECKS_PASSED" for item in results
+        ))
         self.assertIsNone(self.controller.next_pr())
         transitions = [item["to"] for item in self.controller.entry("PR-001")["history"]]
         self.assertIn("REPLAN", transitions)
@@ -278,6 +291,58 @@ class TestSimulatedRoadmap(unittest.TestCase):
         self.assertIn("PROMPT_UNKNOWN_VARIABLE", self.controller.entry("PR-001")["stopped_reason"])
         self.assertEqual([], self.planner.calls)
 
+    def test_missing_planner_command_is_execution_failure_not_negative_plan(self):
+        with (
+            patch.object(self.controller, "prepare", side_effect=self.prepare),
+            patch.object(self.planner, "execute", side_effect=FileNotFoundError("codex")),
+            patch.object(engine, "require_clean"),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.controller.process(follow=False))
+        entry = self.controller.entry("PR-001")
+        self.assertEqual("STOPPED", entry["stage"])
+        result = entry["last_step_result"]
+        self.assertEqual("FAILED", result["execution_status"])
+        self.assertIsNone(result["functional_outcome"])
+        self.assertEqual("ENVIRONMENT", result["failure_category"])
+        self.assertEqual("COMMAND_NOT_FOUND", result["error_code"])
+        self.assertEqual("FAILED", entry["execution"]["status"])
+        self.assertEqual(0, len(self.coder.calls))
+
+    def test_verify_infrastructure_and_ambiguous_checks_never_start_replan(self):
+        for rc, stderr, category, code in (
+            (127, "bash: uv: command not found", "ENVIRONMENT", "VERIFY_ENVIRONMENT_FAILURE"),
+            (1, "No space left on device", "ENVIRONMENT", "VERIFY_ENVIRONMENT_FAILURE"),
+            (2, "Unexpected test harness output", "PROTOCOL", "VERIFY_CHECK_UNCLASSIFIED"),
+        ):
+            with self.subTest(rc=rc, stderr=stderr):
+                self.setUp()
+                def fake_run(command, cwd, **kwargs):
+                    if command[:2] == ["bash", "-lc"]:
+                        return subprocess.CompletedProcess(command, rc, "", stderr)
+                    return self.mock_run(command, cwd, **kwargs)
+                with (
+                    patch.object(self.controller, "prepare", side_effect=self.prepare),
+                    patch.object(engine, "git", side_effect=self.mock_git),
+                    patch.object(engine, "modified_paths", return_value={"src/file.py"}),
+                    patch.object(engine, "require_clean"),
+                    patch.object(engine, "run", side_effect=fake_run),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    self.assertEqual(2, self.controller.process(follow=False))
+                entry = self.controller.entry("PR-001")
+                self.assertEqual("STOPPED", entry["stage"])
+                self.assertEqual(0, entry["fixups"])
+                result = entry["last_step_result"]
+                self.assertEqual("VERIFY", result["stage"])
+                self.assertEqual("FAILED", result["execution_status"])
+                self.assertIsNone(result["functional_outcome"])
+                self.assertEqual(category, result["failure_category"])
+                self.assertEqual(code, result["error_code"])
+                self.assertEqual([], self.reviewer.calls)
+
     def test_two_review_rejections_force_two_replans_before_next_pr(self):
         self.reviewer.failures_for_first_pr = 2
         with (
@@ -331,6 +396,14 @@ class TestSimulatedRoadmap(unittest.TestCase):
             self.assertEqual(2, self.controller.process(follow=False))
         self.assertEqual("STOPPED", self.controller.entry("PR-001")["stage"])
         self.assertIn("MAX_FIXUPS_REACHED", self.controller.entry("PR-001")["stopped_reason"])
+        last_review = [
+            result for result in self.controller.entry("PR-001")["step_results"]
+            if result["stage"] == "REVIEW"
+        ][-1]
+        self.assertEqual(("SUCCEEDED", "NEGATIVE", "CHANGES_REQUIRED"),
+                         (last_review["execution_status"], last_review["functional_outcome"],
+                          last_review["verdict"]))
+        self.assertEqual("SUCCEEDED", self.controller.entry("PR-001")["execution"]["status"])
         self.assertEqual(
             ["plan", "replan-1", "replan-2"],
             [task.phase for task in self.planner.calls],
@@ -407,6 +480,10 @@ class TestSimulatedRoadmap(unittest.TestCase):
         self.assertEqual("STOPPED", self.controller.entry("PR-001")["stage"])
         self.assertEqual([], self.coder.calls)
         self.assertEqual([], self.reviewer.calls)
+        last = self.controller.entry("PR-001")["last_step_result"]
+        self.assertEqual(("SUCCEEDED", "BLOCKED", "BLOCKED"),
+                         (last["execution_status"], last["functional_outcome"], last["verdict"]))
+        self.assertEqual("SUCCEEDED", self.controller.entry("PR-001")["execution"]["status"])
 
 
 if __name__ == "__main__":
