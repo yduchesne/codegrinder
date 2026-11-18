@@ -15,6 +15,7 @@ from pathlib import Path
 from ..interfaces import (
     AgentExecutionError, CodingProgress, CodingResult, CodingTask, PreflightTask, PreflightResult,
 )
+from ..coding_reports import CodingReportError, extract_final_report, persist_report, report_path
 
 
 class PiAdapterError(AgentExecutionError):
@@ -135,6 +136,10 @@ class PiAdapter:
         stderr_path = task.artifacts / f"{name}.stderr"
         progress_path = task.artifacts / f"{name}.progress.jsonl"
         result_path = task.artifacts / f"{name}.result.json"
+        final_report_path = report_path(
+            task.artifacts, phase=task.phase,
+            fixup_number=task.fixup_number, attempt_id=task.attempt_id,
+        )
         args = [
             self.executable, "--mode", "json", "--provider", self.provider,
             "--model", self.model, "--thinking", self.thinking,
@@ -301,6 +306,14 @@ class PiAdapter:
         ):
             raise PiAdapterError("PI_MODEL_SELECTION_MISMATCH")
 
+        # Only the final completed assistant message contributes report text.
+        # Intermediate model output and tool traces remain in the private JSONL.
+        try:
+            report = extract_final_report(assistant)
+            report_sha256 = persist_report(final_report_path, report)
+        except CodingReportError as exc:
+            raise PiAdapterError(str(exc)) from exc
+
         result = CodingResult(
             pr_id=task.pr_id, phase=task.phase, adapter="pi",
             model=self.model, status="COMPLETED",
@@ -310,6 +323,8 @@ class PiAdapter:
             failed_tools=failed_tools, session_id=session_id,
             stdout_path=str(stdout_path), stderr_path=str(stderr_path),
             progress_path=str(progress_path), attempt_id=task.attempt_id or None,
+            final_report_path=str(final_report_path),
+            final_report_sha256=report_sha256,
         )
         with _private_binary(result_path) as handle:
             handle.write((json.dumps(asdict(result), sort_keys=True, indent=2) + "\n").encode("utf-8"))
