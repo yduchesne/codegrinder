@@ -112,6 +112,91 @@ The `<workflow-id>` is the **first 20 lowercase hexadecimal characters** (`0`–
 
 State and attempt-journal writes use atomic replacement and file/directory `fsync`. The workflow has a single-runner lock; another invocation cannot concurrently mutate the same workflow. The orchestrator uses its saved state to decide **what to inspect**; it does not interpret saved stage labels or `DONE` as proof that external operations happened.
 
+## Concurrency: running several `grind` instances
+
+Codegrinder supports multiple terminals or processes on one machine, but its
+**current mutual-exclusion boundary is the workflow**, not the entire Git
+repository or host. This is important when two roadmaps target the same checkout.
+
+### What is locked today
+
+The normal `grind run` CLI computes a state directory from the **resolved Git
+repository path** and **resolved roadmap path** (see the preceding section).
+The directory contains `runner.lock`, which the CLI opens and locks with an
+exclusive, nonblocking Linux advisory filesystem lock:
+
+```python
+fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+```
+
+If another `grind run` already holds that lock, the second invocation
+**does not queue or wait**. It prints `STOP: ANOTHER_RUNNER_ACTIVE` and exits
+with status **2**, before it constructs or runs its orchestrator. The lock is
+held until that `grind run` exits, including while it remains in
+`WAIT_MERGE` awaiting CI or a GitHub merge. The operating system releases the
+lock when the file descriptor closes, including after a process terminates;
+the `runner.lock` file can remain on disk and should not be manually deleted
+to bypass locking.
+
+```mermaid
+flowchart TD
+  A["Terminal A: grind run"] --> K["Workflow directory:<br/>repository + roadmap hash"]
+  B["Terminal B: grind run<br/>same repository + roadmap"] --> K
+  K --> L{"runner.lock<br/>exclusive nonblocking flock"}
+  L -->|first holder| R["Run workflow<br/>lock held through WAIT_MERGE"]
+  L -->|lock already held| S["STOP: ANOTHER_RUNNER_ACTIVE<br/>exit code 2"]
+```
+
+The lock is **advisory**: it coordinates invocations using the same lock path,
+not unrelated programs modifying the checkout. It is acquired by the CLI
+(`single_runner` in `engine.py`), not automatically by direct callers of
+`DefaultOrchestrator`; embedding applications must provide equivalent
+exclusion. `grind explain` is read-only and does not acquire this lock. It can
+run alongside a workflow and shows a saved checkpoint, not a synchronized or
+GitHub-reverified status.
+
+### Concurrency decision table
+
+| Simultaneous commands or environments | Current outcome | Explanation |
+| --- | --- | --- |
+| Two `grind run` commands with the same resolved repository and roadmap, using the same state root | **Second stops** | Identical workflow directory and `runner.lock` |
+| Same repository and roadmap, but different `grind.toml` or guide options | **Second stops**, if the state root is shared | Configuration and guide do **not** contribute to the workflow ID; they are separately pinned for resume |
+| Same repository, **different roadmap paths** | **Both may run** | Different workflow IDs and locks, even when the PRs overlap |
+| Different Git repository paths | **Both may run** | Separate workflow IDs and state directories |
+| `grind run` beside `grind explain` | **Both permitted** | `explain` reads but does not execute agents or take a runner lock |
+| Same repository/roadmap with different `XDG_STATE_HOME` values | **Both may run** | Different lock-file roots defeat mutual exclusion |
+| Direct `DefaultOrchestrator` usage without caller-managed locking | **No CLI lock guaranteed** | The caller bypasses `single_runner` |
+
+**Risk when different roadmaps share one repository:** Even though their state
+and worktree paths are separate, both may create or update a Git branch named
+`prflow/<PR-ID>`, publish conflicting GitHub PRs, interfere with Git worktree
+and ref operations, or modify overlapping code. Tests and performance
+benchmarks may also contend for CPU, memory, disk or network resources—even
+when the workflows use different repositories. Distinct state directories are
+**not** proof of safe parallel operation.
+
+### Recommended stronger model — not implemented
+
+A future concurrency design should introduce two complementary levels of
+mutual exclusion, acquired in a consistent order and released reliably:
+
+| Proposed lock | Scope | Purpose |
+| --- | --- | --- |
+| Repository lock | One canonical Git checkout, **independent of roadmap or state directory** | Prevent overlapping PR/branch/worktree operations by different roadmaps |
+| Workflow lock (existing) | Resolved repository + roadmap | Protect a particular workflow's state, journal and recovery |
+
+For reproducible performance benchmarks, a separate **optional host-level
+resource lock** could prevent workflows in *different repositories* from
+benchmarking on the same host simultaneously. This is a proposed safeguard,
+not a capability available in the current implementation.
+
+**Operational guidance until these safeguards are implemented:** Run at most
+one `grind run` against a given Git repository at a time, use a consistent
+`XDG_STATE_HOME`, and do not launch concurrent performance benchmarks on a
+shared host. Codegrinder's existing workflow-scoped lock prevents duplicated
+invocations of *one* workflow; it does **not** enforce repository-wide or
+host-wide isolation.
+
 ## Restart and crash recovery
 
 Recovery is **evidence-driven and fail-closed**. Before launching agents or selecting another PR, `RecoveryCoordinator.reconcile()` inspects unfinished attempts, ensures the matching journal is present and valid, checks whether a prior agent process is still active (guarding against PID reuse), compares the current worktree to the baseline, and examines any attempt-specific terminal or publishing evidence. An already committed transition is checked against the artifacts required for its destination stage.
