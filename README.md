@@ -124,6 +124,19 @@ Step adapter settings inherit the defaults when omitted. `plan.roadmap` and `pla
 
 Only `codex` is supported for planning/review and `pi` for coding in this first version. Protocols allow additional adapters without redesigning the controller. `grind.toml` may be committed to each target repository to version the agent selections; the tracked `.example` is the public configuration template. Store API credentials in the harnesses' own authenticated mechanisms, **not** in the TOML file.
 
+## Step results and failure classification
+
+Codegrinder records **execution status separately from functional outcome**.
+A valid Codex `CHANGES_REQUIRED` review is `SUCCEEDED / NEGATIVE` and
+leads to `REPLAN`; a valid `BLOCKED` plan or `STOP` review is
+`SUCCEEDED / BLOCKED` and causes a controlled stop. Missing executables,
+disk exhaustion, malformed responses and uncertain verification output are
+execution failures, not code-quality verdicts. Each stage's structured result
+is retained in the workflow state/attempt journal and logged with separate
+`execution_status`, `outcome`, `verdict`, and sanitized failure metadata.
+See [Architecture](docs/ARCHITECTURE.md#step-execution-status-versus-functional-outcome)
+for the result model, error categories, decision matrix and recovery behavior.
+
 ## Orchestrator and completed-roadmap reconciliation
 
 The public `Orchestrator` protocol exposes `run() -> int`. The default
@@ -277,8 +290,8 @@ that timestamp in the basename with `.1`, `.2` suffixes.
 Before and after every planning, coding and reviewing adapter invocation,
 the orchestrator records an INFO-level `STEP_START`/`STEP_FINISH` with PR,
 step name, current state, disposition, and duration. A rejected review
-records a FAILED disposition and transition to REPLAN; completion and
-STOPPED states are logged separately. Preflight calls are logged in
+records a successful invocation with a NEGATIVE functional outcome and
+transitions to REPLAN; true execution failures are logged separately. Preflight calls are logged in
 `_run/`. Sanitized coding progress is logged without prompts, tool
 arguments, model responses or raw credentials. Original stdout/stderr traces
 remain separately in restricted adapter artifacts and **are not**
