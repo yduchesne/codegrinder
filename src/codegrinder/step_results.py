@@ -94,7 +94,7 @@ def execution_error(exc: Exception) -> tuple[str, str]:
             return "ENVIRONMENT", "PERMISSION_DENIED"
         return "ENVIRONMENT", "OS_ERROR"
     msg = str(exc)
-    code_match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?=:|$)", msg)
+    code_match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?=:|[(]|$)", msg)
     code = code_match.group(1) if code_match else "UNCLASSIFIED_EXCEPTION"
     if code.startswith("RECOVERY_") or code in {"UNRECONCILED_ATTEMPT", "ATTEMPT_NOT_RUNNING"}:
         return "RECOVERY", code
