@@ -492,6 +492,7 @@ class DefaultOrchestrator:
                 fixup_number=self.entry(pid)["fixups"], attempt_id=attempt_id,
             )
             ent = self.entry(pid)
+            ent["latest_coding_attempt"] = attempt_id or None
             ent.setdefault("coding_results", []).append(asdict(result))
             if attempt_id:
                 self._update_attempt(pid, result=asdict(result))
@@ -750,6 +751,9 @@ Leave changed files in this worktree for the orchestrator to validate and commit
         except (ValueError, TypeError) as exc:
             raise StopWorkflow("REVIEW_CODING_RESULT_INVALID") from exc
         phase = "fixup" if ent["fixups"] else "code"
+        if (not isinstance(result.attempt_id, str) or not result.attempt_id or
+                result.attempt_id != ent.get("latest_coding_attempt")):
+            raise StopWorkflow("REVIEW_CODING_ATTEMPT_MISMATCH")
         return verified_report(
             result, self.artifact(pid), pr_id=pid, phase=phase,
             fixup_number=ent["fixups"], attempt_id=result.attempt_id or "",
