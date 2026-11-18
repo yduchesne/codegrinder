@@ -156,6 +156,70 @@ This table summarizes the *implemented* conservative outcomes. Rows are evaluate
 
 A stop requires operator investigation; Codegrinder does not guess whether an external side effect occurred. In particular, this design does **not** guarantee exactly-once execution of arbitrary agent actions. `grind explain` provides a read-only snapshot of the saved attempt and possible recovery blocker; it does **not** execute reconciliation or repair state.
 
+## Structured agent handoffs: coding report and independent review
+
+The coding harness (Pi) writes a JSONL event stream containing progress,
+intermediate assistant/tool messages, and terminal events. The adapter drains
+stdout/stderr concurrently to restricted diagnostic artifacts, but does **not**
+pass that full stream to Codex. It selects the **last completed assistant
+`message_end`**, checks that the process exited successfully and the agent
+emitted a non-aborted `agent_settled`, verifies provider/model identity, and
+extracts only `type: "text"` content blocks. Tool results, thinking blocks,
+intermediate assistant messages and raw stderr are excluded.
+
+The nonempty, size-bounded final report is stored as an attempt-specific
+`<phase>-<fixup-number>-<attempt-id>.report.md` under
+`<state-dir>/artifacts/<PR-ID>/` (for example,
+`code-0-BM-01-00000001.report.md`). The report is written privately and
+atomically. The normalized `CodingResult` records its exact path and
+SHA-256 digest along with existing process/attempt metadata; `state.json`
+stores that result and the latest successful coding attempt ID. A completed
+process without validated report evidence is **not** a completed coding step.
+
+```mermaid
+flowchart TD
+  Pi["Pi JSONL: progress, tools, messages, settled"] --> Extract["Select final assistant message_end<br/>extract text blocks only"]
+  Extract --> Evidence["Private report.md + SHA-256<br/>attempt-scoped CodingResult"]
+  Evidence --> Verify["VERIFY code scope and deterministic checks"]
+  Verify --> Publish["PUBLISH PR at frozen commit"]
+  Publish --> Review["REVIEW: Codex receives untrusted coding report,<br/>PR requirements, frozen plan, diff and test evidence"]
+  Review -->|PASS| Wait["WAIT_MERGE"]
+  Review -->|CHANGES_REQUIRED| Feedback["Persist validated summary + findings<br/>feedback-N.json"]
+  Feedback --> Replan["REPLAN: Codex gets all feedback history,<br/>prior plan and actual worktree"]
+```
+
+Before passing the report to review, the orchestrator independently derives its
+expected artifact path from PR, phase, fixup number and attempt ID, verifies
+that it belongs to the **latest coding attempt**, checks its digest, validates
+size and encoding, and refuses symlinks. The review prompt treats the report
+as **untrusted claims**, not permission to bypass reviewing the actual Git diff,
+required checks or acceptance criteria. After a fixup, the reviewer receives
+the **fixup report**, not the superseded initial coding report.
+
+On crash recovery, the same evidence checks apply before a recovered coding
+attempt can advance to `VERIFY`; a missing, mismatched, invalid or tampered
+report causes a fail-closed stop, never speculative re-execution. Previously
+saved coding results without the report metadata cannot be assumed safe to
+recover. The attempt journal remains the authority for whether the original
+worker exited.
+
+By contrast, Codex planning/review uses `--output-schema` and a dedicated
+JSON artifact, rather than parsing its console narration. The review result
+must have a validated `verdict`, `summary`, and structured `findings`.
+On `CHANGES_REQUIRED`, Codegrinder writes versioned `feedback-N.json` and
+supplies its **summary and findings**, including earlier feedback history,
+to the same PR's next planning invocation. Deterministic verification failures
+use the same replanning path with synthetic structured findings. The reviewer
+does not directly invoke coding: `REPLAN` must produce an approved plan
+before `CODE_FIXUP`.
+
+The implementation boundaries are
+`adapters/pi.py` (JSONL consumption),
+`coding_reports.py` (shared extraction and integrity validation),
+`interfaces.py` (`CodingResult`),
+`engine.py` (prompt handoffs), `adapters/codex.py` (schema JSON),
+and `recovery_runner.py` (restart reconciliation).
+
 ## Observability and relevant source files
 
 The orchestrator logs INFO-level start/finish events around each step, with state, disposition, and duration, plus stop/error events. Console and rotating file outputs are independently configurable and may both be enabled. Persistent file logs default to the state directory's `logs/_run/` and `logs/<PR-ID>/`; raw agent stdout/stderr are separate restricted diagnostics. See [Configuration](CONFIGURATION.md) for log settings.
