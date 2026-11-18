@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from codegrinder.config import ConfigurationError, load_config
+from codegrinder.coding_reports import persist_report, report_path
 from codegrinder.engine import Controller
 from codegrinder.interfaces import CodingResult, PreflightResult
 from codegrinder.run_logging import LoggingSettings, WorkflowEventLogger, safe_error_code
@@ -189,9 +190,12 @@ class TestLogging(unittest.TestCase):
             guide.write_text("Guide")
             coder = Mock()
             coder.identity.return_value = {"adapter": "fake"}
+            artifacts = root / "state" / "artifacts" / "PR-001"
+            report = report_path(artifacts, phase="code", fixup_number=0, attempt_id="")
+            digest = persist_report(report, "Implementation completed.")
             coder.execute.return_value = CodingResult(
                 "PR-001", "code", "fake", "mock-model", "COMPLETED",
-                0, 0.1, 3, 0, 0, None, "", "", "",
+                0, 0.1, 3, 0, 0, None, "", "", "", None, str(report), digest,
             )
             worker = Controller(repo, SAMPLE, root / "state", guide, coder=coder)
             with contextlib.redirect_stdout(io.StringIO()):
