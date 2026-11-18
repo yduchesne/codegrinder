@@ -26,7 +26,7 @@ _ENVIRONMENT_MARKERS = (
 )
 _TEST_FAILURE_MARKERS = (
     "assertionerror", "assertion failed", "tests failed", "test failed",
-    "test result: fail", "== failures ==", "failed tests/",
+    "test result: fail", "== failures ==", "failed tests/", "failed in ",
     "found 1 error", "errors found", "error[e", "error[f",
     "error: expected", "error: unused",
 )
