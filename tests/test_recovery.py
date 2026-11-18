@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from codegrinder import engine
+from codegrinder.coding_reports import persist_report, report_path
 from codegrinder.interfaces import CodingResult
 from codegrinder.recovery import process_identity, process_status, worktree_snapshot
 
@@ -72,9 +73,14 @@ class TestRecovery(unittest.TestCase):
             worker.recover_interrupted()
 
     def coding_result(self, attempt_id):
+        path = report_path(
+            self.worker.artifact(self.pid),
+            phase="code", fixup_number=0, attempt_id=attempt_id,
+        )
+        digest = persist_report(path, f"Verified completed implementation for {attempt_id}")
         return CodingResult(
             "PR-001", "code", "pi", "test-model", "COMPLETED", 0, 12.4, 8, 3, 0,
-            "s-123", "out", "err", "progress", attempt_id,
+            "s-123", "out", "err", "progress", attempt_id, str(path), digest,
         )
 
     def test_journal_is_written_before_step_invocation(self):
@@ -95,6 +101,7 @@ class TestRecovery(unittest.TestCase):
         self.assertEqual("VERIFY", resumed.entry(self.pid)["stage"])
         self.assertEqual("RECOVERED", resumed.entry(self.pid)["execution"]["status"])
         self.assertEqual(1, len(resumed.entry(self.pid)["coding_results"]))
+        self.assertEqual(rec["id"], resumed.entry(self.pid)["latest_coding_attempt"])
         self.coder.execute.assert_not_called()
 
     def test_completed_result_wrong_attempt_is_rejected(self):
@@ -106,6 +113,40 @@ class TestRecovery(unittest.TestCase):
             self.reconcile(resumed)
         self.assertEqual("MANUAL_REQUIRED", resumed.entry(self.pid)["execution"]["recovery"]["decision"])
         self.assertEqual("CODE", resumed.entry(self.pid)["stage"])
+
+    def test_missing_report_blocks_completed_coding_recovery(self):
+        rec = self.begin(launched=True)
+        result = self.coding_result(rec["id"])
+        Path(result.final_report_path).unlink()
+        path = self.worker.artifact(self.pid) / f"code-0-{rec['id']}.result.json"
+        path.write_text(json.dumps(asdict(result)))
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_CODING_REPORT_INVALID"):
+            self.reconcile(resumed)
+        self.coder.execute.assert_not_called()
+
+    def test_tampered_report_blocks_completed_coding_recovery(self):
+        rec = self.begin(launched=True)
+        result = self.coding_result(rec["id"])
+        Path(result.final_report_path).write_text("changed report after completion")
+        path = self.worker.artifact(self.pid) / f"code-0-{rec['id']}.result.json"
+        path.write_text(json.dumps(asdict(result)))
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_CODING_REPORT_INVALID"):
+            self.reconcile(resumed)
+        self.coder.execute.assert_not_called()
+
+    def test_missing_report_metadata_in_legacy_result_is_rejected(self):
+        rec = self.begin(launched=True)
+        result = asdict(self.coding_result(rec["id"]))
+        del result["final_report_path"]
+        del result["final_report_sha256"]
+        path = self.worker.artifact(self.pid) / f"code-0-{rec['id']}.result.json"
+        path.write_text(json.dumps(result))
+        resumed = self.resumed()
+        with self.assertRaisesRegex(engine.StopWorkflow, "RECOVERY_CODING_REPORT_INVALID"):
+            self.reconcile(resumed)
+        self.coder.execute.assert_not_called()
 
     def test_partial_coding_returns_to_planning_and_is_not_repeated(self):
         self.begin(launched=True)
