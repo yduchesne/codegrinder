@@ -30,7 +30,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-codegrinder = ["schemas/*.json"]
+codegrinder = ["schemas/*.json", "prompts/*/*.prompt.txt", "prompts/*/*/*.prompt.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
