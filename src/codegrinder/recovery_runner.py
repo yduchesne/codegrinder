@@ -11,6 +11,7 @@ from dataclasses import asdict
 from typing import Any, NoReturn
 
 from .interfaces import CodingResult
+from .coding_reports import CodingReportError, verified_report
 from .recovery import RecoveryError, process_status, validate_attempt, worktree_snapshot
 
 
@@ -83,6 +84,14 @@ class RecoveryCoordinator:
                 result.exit_code != 0 or result.event_count < 1 or
                 result.model != code_agent.get("model")):
             self.block(pid, "RECOVERY_RESULT_MISMATCH")
+        try:
+            verified_report(
+                result, self.c.artifact(pid), pr_id=pid, phase=phase,
+                fixup_number=self.c.entry(pid).get("fixups", 0),
+                attempt_id=record["id"],
+            )
+        except CodingReportError:
+            self.block(pid, "RECOVERY_CODING_REPORT_INVALID")
         return result
 
     def published_evidence(self, pid: str) -> None:
@@ -224,6 +233,7 @@ class RecoveryCoordinator:
                 except StopWorkflow:
                     self.block(pid, "RECOVERY_SCOPE_VIOLATION")
                 ent = self.c.entry(pid)
+                ent["latest_coding_attempt"] = record["id"]
                 if not any(item.get("attempt_id") == record["id"]
                            for item in ent.get("coding_results", [])):
                     ent.setdefault("coding_results", []).append(asdict(result))
