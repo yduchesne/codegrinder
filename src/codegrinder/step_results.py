@@ -25,14 +25,11 @@ _ENVIRONMENT_MARKERS = (
     "command not found", "permission denied",
 )
 _TEST_FAILURE_MARKERS = (
-    "failed", "failure", "assertionerror", "assertion failed",
-    "test failed", "errors found", "error:", "error[",
-    "found 1 error", "tests failed", "test result: fail",
+    "assertionerror", "assertion failed", "tests failed", "test failed",
+    "test result: fail", "== failures ==", "failed tests/",
+    "found 1 error", "errors found", "error[e", "error[f",
+    "error: expected", "error: unused",
 )
-
-
-class StepBlockedError(RuntimeError):
-    """A valid step verdict or policy decision stopped the workflow."""
 
 
 class StepExecutionError(RuntimeError):
@@ -97,7 +94,7 @@ def execution_error(exc: Exception) -> tuple[str, str]:
             return "ENVIRONMENT", "PERMISSION_DENIED"
         return "ENVIRONMENT", "OS_ERROR"
     msg = str(exc)
-    code_match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?::|\\b)", msg)
+    code_match = re.match(r"^([A-Z][A-Z0-9_]{2,79})(?=:|$)", msg)
     code = code_match.group(1) if code_match else "UNCLASSIFIED_EXCEPTION"
     if code.startswith("RECOVERY_") or code in {"UNRECONCILED_ATTEMPT", "ATTEMPT_NOT_RUNNING"}:
         return "RECOVERY", code
@@ -133,6 +130,8 @@ def classify_check_failure(returncode: int, stdout: str, stderr: str) -> str:
         return "ENVIRONMENT"
     if any(marker in output for marker in _ENVIRONMENT_MARKERS):
         return "ENVIRONMENT"
+    if output.strip() in {"failed", "failure"}:
+        return "NEGATIVE"
     if any(marker in output for marker in _TEST_FAILURE_MARKERS):
         return "NEGATIVE"
     return "UNKNOWN"
