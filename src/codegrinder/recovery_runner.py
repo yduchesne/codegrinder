@@ -12,6 +12,7 @@ from typing import Any, NoReturn
 
 from .interfaces import CodingResult
 from .coding_reports import CodingReportError, verified_report
+from .step_results import StepResult
 from .recovery import RecoveryError, process_status, validate_attempt, worktree_snapshot
 
 
@@ -26,11 +27,52 @@ class RecoveryCoordinator:
         self.c._save_attempt(pid)
         self.c.logs.emit("RECOVERY_BLOCKED", pr_id=pid, step=record["stage"],
                          state=self.c.entry(pid)["stage"], disposition="FAILED",
-                         level="ERROR", error_code=code)
+                         level="ERROR", error_code=code,
+                         execution_status="FAILED", failure_category="RECOVERY")
         raise StopWorkflow(f"{code}: {pid} requires manual reconciliation")
 
     def resolved(self, pid: str, decision: str, *, retry: bool) -> None:
         record = self.c.entry(pid)["execution"]
+        prior = record.get("step_result")
+        if prior is not None:
+            try:
+                result = StepResult(**prior)
+            except (TypeError, ValueError):
+                self.block(pid, "RECOVERY_STEP_RESULT_INVALID")
+            if result.attempt_id != record["id"] or result.stage != record["stage"]:
+                self.block(pid, "RECOVERY_STEP_RESULT_MISMATCH")
+        else:
+            # Recovery itself is not an agent verdict. An interrupted invocation
+            # has no meaningful functional result unless terminal stage-specific
+            # evidence proves that it completed.
+            stage = record["stage"]
+            success = decision in {
+                "COMMITTED_TRANSITION_RECONCILED", "CODING_RESULT_RECONCILED",
+                "PUBLISHED_PR_RECONCILED",
+            }
+            if success:
+                next_stage = self.c.entry(pid)["stage"]
+                mapping = {
+                    "PLAN": ("POSITIVE", "READY"),
+                    "REPLAN": ("POSITIVE", "READY"),
+                    "CODE": ("POSITIVE", "COMPLETED"),
+                    "CODE_FIXUP": ("POSITIVE", "COMPLETED"),
+                    "VERIFY": ("NEGATIVE", "CHECKS_FAILED") if next_stage == "REPLAN"
+                              else ("POSITIVE", "CHECKS_PASSED"),
+                    "REVIEW": ("NEGATIVE", "CHANGES_REQUIRED") if next_stage == "REPLAN"
+                              else ("POSITIVE", "PASS"),
+                    "PUBLISH": ("POSITIVE", "PUBLISHED"),
+                    "WAIT_MERGE": ("POSITIVE", "MERGED"),
+                }
+                outcome, verdict = mapping[stage]
+                self.c._record_step_result(
+                    pid, stage=stage, outcome=outcome, verdict=verdict,
+                )
+            else:
+                self.c._record_step_result(
+                    pid, stage=stage, execution_status="INTERRUPTED",
+                    failure_category="RECOVERY", error_code=decision,
+                )
         record["recovery"] = {"decision": decision}
         self.c._finish_attempt(pid, "INTERRUPTED" if retry else "RECOVERED", decision)
 
