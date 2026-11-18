@@ -53,6 +53,8 @@ class TestStepResults(unittest.TestCase):
              ("ENVIRONMENT", "VERIFY_ENVIRONMENT_FAILURE")),
             (ValueError("REVIEW_SCHEMA_INVALID: bad json"), ("PROTOCOL", "REVIEW_SCHEMA_INVALID")),
             (ValueError("CONFIG_INVALID: bad settings"), ("CONFIGURATION", "CONFIG_INVALID")),
+            (ValueError("PI_FAILED(127): worker unavailable"), ("ENVIRONMENT", "PI_FAILED")),
+            (ValueError("CODEX_FAILED(1): no response"), ("ENVIRONMENT", "CODEX_FAILED")),
             (ValueError("RECOVERY_HEAD_CHANGED: invalid"), ("RECOVERY", "RECOVERY_HEAD_CHANGED")),
         )
         for exc, expected in cases:
