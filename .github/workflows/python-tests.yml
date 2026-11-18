@@ -64,6 +64,7 @@ jobs:
             "${UV_TOOL_BIN_DIR}/grind" run --help >/dev/null
             "${UV_TOOL_BIN_DIR}/grind" explain --help >/dev/null
             "${UV_TOOL_DIR}/codegrinder/bin/python" -c 'from importlib.metadata import version; from importlib.resources import files; import codegrinder; assert version("codegrinder") == codegrinder.__version__, "version mismatch"; assert all(files("codegrinder").joinpath("schemas", name).is_file() for name in ("plan.schema.json", "review.schema.json")), "package schemas missing"'
+            "${UV_TOOL_DIR}/codegrinder/bin/python" -c 'from importlib.resources import files; p = files("codegrinder").joinpath("prompts", "plan", "general.prompt.txt"); assert p.is_file() and "{{PR_ID}}" in p.read_text(encoding="utf-8"), "packaged general planning prompt missing"'
             echo "Smoke-tested Codegrinder $format from built distribution"
           done
       - name: Validate generated CycloneDX SBOM
