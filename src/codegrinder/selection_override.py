@@ -217,11 +217,8 @@ def commit_force_selection(orch, pr_id: str, conflicts: list[dict]) -> None:
         "RECOVERY_OVERRIDE_APPROVED", pr_id=pr_id, state="PLAN",
         disposition="SUCCEEDED",
     )
-    orch.logs.emit(
-        "ATTEMPT_SUPERSEDED", pr_id=pr_id, state="PLAN",
-        disposition="SUCCEEDED",
-    )
-    orch.logs.emit(
-        "FORCED_PLANNING_STARTED", pr_id=pr_id, state="PLAN",
-        disposition="STARTED",
-    )
+    if conflicts:
+        orch.logs.emit(
+            "ATTEMPT_SUPERSEDED", pr_id=pr_id, state="PLAN",
+            disposition="SUCCEEDED",
+        )
