@@ -30,6 +30,10 @@ def parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--conf", dest="run_conf", type=Path, metavar="PATH",
                      help="Optional TOML configuration (also accepted before run)")
+    run.add_argument("--pr", metavar="PR_ID",
+                     help="Run exactly one PR identified in the roadmap (exact ID, no spaces)")
+    run.add_argument("-f", "--force", action="store_true",
+                     help="With --pr only: supersede safe, stopped work and start a new isolated PLAN")
     run.add_argument("-g", "--guide", type=Path, metavar="PATH",
                      help="Authoring guide (overrides [plan.guide] path in TOML; relative paths use CWD)")
     run.add_argument("-r", "--roadmap", type=Path, metavar="PATH",
@@ -68,6 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         command_conf = getattr(args, f"{args.command}_conf")
         if args.conf is not None and command_conf is not None:
             raise ConfigurationError("CONFIG_DUPLICATE: pass --conf only once")
+        if args.command == "run" and args.force and args.pr is None:
+            raise ConfigurationError("FORCE_REQUIRES_PR: -f/--force requires --pr")
         configuration = load_config(args.conf if args.conf is not None else command_conf)
         guide = args.guide.expanduser().resolve() if args.guide is not None else configuration.guide_path
         roadmap = args.roadmap.expanduser().resolve() if args.roadmap is not None else configuration.roadmap_path
@@ -100,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
             orchestrator: Orchestrator = DefaultOrchestrator(
                 context=context, planner=planner, coder=coder, reviewer=reviewer,
             )
+            if args.pr is not None:
+                return orchestrator.run(pr_id=args.pr, force=args.force)
             return orchestrator.run()
     except (StopWorkflow, RoadmapFormatError, ConfigurationError, FileNotFoundError, OSError, ValueError) as exc:
         print(f"STOP: {exc}", file=sys.stderr)
