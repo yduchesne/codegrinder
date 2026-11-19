@@ -102,7 +102,16 @@ def _last_checkpoint(prs: list[dict], entries: dict) -> tuple[str, str, str, str
             else "UNVERIFIED (no saved merge evidence)"
         )
     elif stage == "STOPPED":
-        outcome = "FAILED / STOPPED"
+        recorded = entry.get("last_step_result")
+        if isinstance(recorded, dict) and recorded.get("execution_status") == "SUCCEEDED":
+            if recorded.get("functional_outcome") == "BLOCKED":
+                outcome = "BLOCKED / STOPPED (valid step verdict)"
+            elif recorded.get("functional_outcome") == "NEGATIVE":
+                outcome = "NEGATIVE / STOPPED (workflow policy)"
+            else:
+                outcome = "FAILED / STOPPED"
+        else:
+            outcome = "FAILED / STOPPED"
     elif stage == "WAIT_MERGE":
         outcome = "INCOMPLETE (awaiting confirmed merge)"
     else:
