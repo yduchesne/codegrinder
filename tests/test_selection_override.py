@@ -212,6 +212,17 @@ class TestSelectionOverride(unittest.TestCase):
         self.assertEqual("VERIFY", old["stage"])
         self.assertEqual(rec["id"], old["execution"]["id"])
 
+    def test_force_checks_terminal_target_process_even_without_conflicts(self):
+        record = self.active(status="SUCCEEDED", launched=True)
+        self.worker.entry("PR-001")["stage"] = "VERIFY"
+        self.worker.save()
+        issues = selection_conflicts(self.worker.config, self.worker.state, "PR-001")
+        self.assertEqual([], issues)
+        with patch("codegrinder.selection_override.process_status", return_value="ACTIVE"):
+            with self.assertRaisesRegex(SelectionOverrideError, "FORCE_PROCESS_ACTIVE"):
+                assess_force_safety(self.worker, "PR-001", issues)
+        self.assertEqual("SUCCEEDED", record["status"])
+
     def test_active_or_unknown_prior_worker_cannot_be_forced(self):
         for state in ("ACTIVE", "UNKNOWN"):
             with self.subTest(process=state):
