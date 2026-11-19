@@ -103,19 +103,22 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
                 raise SelectionOverrideError(f"FORCE_LEGACY_STATE_UNSAFE: {pid}")
             continue
         status = record.get("status")
+        identity = record.get("process")
+        if identity is not None:
+            process = process_status(identity)
+            if process != "EXITED":
+                raise SelectionOverrideError(f"FORCE_PROCESS_{process}: {pid}")
         if status == "RUNNING":
             # Non-agent stages may have started untracked Git/GitHub or check
             # subprocesses. A RUNNING record cannot prove their completion.
             if record.get("stage") not in {"PLAN", "REPLAN", "CODE", "CODE_FIXUP", "REVIEW"}:
                 raise SelectionOverrideError(f"FORCE_UNTRACKED_PROCESS: {pid}")
-            launch = record.get("launch_state")
-            identity = record.get("process")
-            if identity is not None:
-                process = process_status(identity)
-                if process != "EXITED":
-                    raise SelectionOverrideError(f"FORCE_PROCESS_{process}: {pid}")
-            elif launch != "NOT_STARTED":
+            if identity is None and record.get("launch_state") != "NOT_STARTED":
                 raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
+        if status == "FAILED" and identity is None and record.get("launch_state") in {
+            "LAUNCHING", "LAUNCHED",
+        }:
+            raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
             # Do not bypass an absent or corrupted recovery audit journal.
             path = orch._attempt_path(pid, record.get("id", ""))
             if not path.is_file() or path.is_symlink() or path.stat().st_size > 1024 * 1024:
