@@ -132,7 +132,10 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
                 raise SelectionOverrideError(f"FORCE_UNTRACKED_PROCESS: {pid}")
             if identity is None and record.get("launch_state") != "NOT_STARTED":
                 raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
-        if status == "FAILED" and identity is None and record.get("launch_state") in {
+        # A terminal status alone does not prove the absence of a child
+        # process if the process was launched but its identity was not
+        # recorded. This applies to SUCCEEDED/RECOVERED as well as FAILED.
+        if identity is None and record.get("launch_state") in {
             "LAUNCHING", "LAUNCHED",
         }:
             raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
@@ -157,6 +160,16 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
     # even when its local checkpoint was lost. Never create a competing one.
     if git(orch.repo, "ls-remote", "--heads", "origin", f"prflow/{pr_id}").strip():
         raise SelectionOverrideError(f"FORCE_TARGET_REMOTE_BRANCH_PRESENT: {pr_id}")
+    # The previous generation may have used an already-forced branch name.
+    # If it exists remotely, we cannot assume its changes were never
+    # published merely because the local checkpoint has no PR number.
+    previous_branch = target.get("branch")
+    if previous_branch is not None:
+        if (not isinstance(previous_branch, str) or
+                not re.fullmatch(r"prflow/" + re.escape(pr_id) + r"-force-[0-9]{8}", previous_branch)):
+            raise SelectionOverrideError(f"FORCE_TARGET_BRANCH_INVALID: {pr_id}")
+        if git(orch.repo, "ls-remote", "--heads", "origin", previous_branch).strip():
+            raise SelectionOverrideError(f"FORCE_PREVIOUS_REMOTE_BRANCH_PRESENT: {pr_id}")
     branch = f"prflow/{pr_id}-force-{serial + 1:08d}"
     if git(orch.repo, "branch", "--list", branch).strip():
         raise SelectionOverrideError(f"FORCE_BRANCH_EXISTS: {branch}")
