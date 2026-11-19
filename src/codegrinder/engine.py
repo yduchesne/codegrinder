@@ -369,17 +369,30 @@ class DefaultOrchestrator:
                        error_code=safe_error_code(StopWorkflow(reason)))
         print("STOP: " + reason, file=sys.stderr, flush=True)
 
-    def _branch(self, pid: str) -> str:
+    def _work_name(self, pid: str) -> str:
+        """Derive safe Git/worktree/artifact naming from pinned override metadata."""
         entry = self.state["prs"].get(pid, {})
-        return entry.get("branch", f"prflow/{pid}")
+        if not isinstance(entry, dict):
+            raise StopWorkflow("WORKFLOW_ENTRY_INVALID")
+        overrides = ("branch", "worktree_name", "artifacts_name")
+        if not any(key in entry for key in overrides):
+            return pid
+        name = entry.get("worktree_name")
+        if (not isinstance(name, str) or
+                not re.fullmatch(re.escape(pid) + r"-force-[0-9]{8}", name) or
+                entry.get("artifacts_name") != name or
+                entry.get("branch") != "prflow/" + name):
+            raise StopWorkflow("WORKFLOW_OVERRIDE_PATH_INVALID")
+        return name
+
+    def _branch(self, pid: str) -> str:
+        return "prflow/" + self._work_name(pid)
 
     def wt(self, pid: str):
-        entry = self.state["prs"].get(pid, {})
-        return self.state_dir / "worktrees" / entry.get("worktree_name", pid)
+        return self.state_dir / "worktrees" / self._work_name(pid)
 
     def artifact(self, pid: str):
-        entry = self.state["prs"].get(pid, {})
-        path = self.state_dir / "artifacts" / entry.get("artifacts_name", pid)
+        path = self.state_dir / "artifacts" / self._work_name(pid)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
