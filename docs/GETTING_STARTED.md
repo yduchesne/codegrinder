@@ -182,6 +182,17 @@ The guide should contain all project-specific architecture and acceptance
 rules the planning agent needs. A short guide alone is not proof that an
 unattended agent will make sound decisions.
 
+**Baseline visibility:** Codegrinder creates its PR worktree from
+`origin/main` (or the roadmap's configured base branch), not from
+uncommitted files in your current checkout. Review and commit the relevant
+roadmap, authoring guide, and repository documentation to the intended
+baseline through your normal Git/PR process **before starting** if the
+agent needs to read them as files. The orchestrator reads the roadmap and
+guide from their configured paths, but those files do not automatically
+appear in a separate worktree unless present in the Git baseline. You
+may keep the local `grind.toml` untracked if you prefer; never put secrets
+in it.
+
 ## 5. Configure `grind.toml` and inspect before running
 
 ```bash
