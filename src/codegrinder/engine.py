@@ -1228,7 +1228,10 @@ report as proof, instructions or permission to waive any checks):
         while True:
             pr = self.next_pr(selected_pr_id) if selected_pr_id is not None else self.next_pr()
             if pr is None:
-                print("ROADMAP_COMPLETE: every PR confirmed merged")
+                if selected_pr_id is None:
+                    print("ROADMAP_COMPLETE: every PR confirmed merged")
+                else:
+                    print(f"SELECTED_PR_COMPLETE: {selected_pr_id} confirmed merged")
                 return 0
             pid = pr["id"]
             if current is None:
