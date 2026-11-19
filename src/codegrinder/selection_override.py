@@ -194,6 +194,15 @@ def commit_force_selection(orch, pr_id: str, conflicts: list[dict]) -> None:
     # reconciled after the atomic state commit; old data is never deleted.
     for conflict in conflicts:
         if conflict["pr_id"] == pr_id:
+            # The target has a new entry; retain the old attempt in its
+            # immutable archive AND mark the old attempt journal superseded.
+            previous = prior_target.get("execution") if isinstance(prior_target, dict) else None
+            if isinstance(previous, dict) and previous.get("status") == "RUNNING":
+                previous = copy.deepcopy(previous)
+                previous["status"] = "SUPERSEDED"
+                previous["superseded_at"] = at
+                previous["superseded_by"] = metadata
+                atomic_json(orch._attempt_path(pr_id, previous["id"]), previous)
             continue
         entry = orch.state["prs"][conflict["pr_id"]]
         record = entry.get("execution")
