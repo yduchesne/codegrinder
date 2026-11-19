@@ -186,6 +186,41 @@ class TestExplain(unittest.TestCase):
         self.assertIn("Can resume: NO", diagnostic)
         self.assertIn("Next PR: PR-001 (RECOVERY_BLOCKED", diagnostic)
 
+    def test_explain_displays_two_dimensional_step_result_without_executing_agents(self):
+        self.saved({
+            "PR-001": {
+                "stage": "STOPPED",
+                "history": [{"at": "2026-11-17T12:00:00Z",
+                             "from": "REVIEW", "to": "STOPPED"}],
+                "last_step_result": {
+                    "stage": "REVIEW", "step": "review",
+                    "attempt_id": "PR-001-00000004", "execution_status": "SUCCEEDED",
+                    "functional_outcome": "BLOCKED", "verdict": "STOP",
+                    "failure_category": None, "error_code": None,
+                },
+            },
+        })
+        prior = (self.state / "state.json").read_bytes()
+        output = self.run_explain()
+        self.assertIn("Last recorded step: REVIEW (attempt PR-001-00000004)", output)
+        self.assertIn("Step execution status: SUCCEEDED", output)
+        self.assertIn("Functional outcome: BLOCKED", output)
+        self.assertIn("Step verdict: STOP", output)
+        self.assertIn("Failure category: N/A", output)
+        self.assertEqual(prior, (self.state / "state.json").read_bytes())
+
+    def test_invalid_saved_step_result_stops_offline_selection(self):
+        self.saved({"PR-001": {
+            "stage": "REVIEW",
+            "last_step_result": {"stage": "REVIEW", "step": "review",
+                                 "attempt_id": "PR-001-00000003",
+                                 "execution_status": "SUCCEEDED",
+                                 "functional_outcome": "NEGATIVE", "verdict": None},
+        }})
+        output = self.run_explain()
+        self.assertIn("Last recorded step result: INVALID", output)
+        self.assertIn("Next PR: N/A (invalid saved step result)", output)
+
     def test_legacy_in_progress_checkpoint_requires_manual_recovery(self):
         self.saved({"PR-001": {"stage": "CODE"}})
         diagnostic = self.run_explain()
