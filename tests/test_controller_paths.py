@@ -141,6 +141,10 @@ class ControllerFixture(unittest.TestCase):
             self.controller.verify(self.pr, self.wt)
         self.assertEqual("REPLAN", self.controller.entry(self.pid)["stage"])
         self.assertEqual(1, self.controller.entry(self.pid)["fixups"])
+        step_result = self.controller.entry(self.pid)["last_step_result"]
+        self.assertEqual(("SUCCEEDED", "NEGATIVE", "CHECKS_FAILED"),
+                         (step_result["execution_status"], step_result["functional_outcome"],
+                          step_result["verdict"]))
         failure = json.loads((self.controller.artifact(self.pid) / "feedback-1.json").read_text())
         self.assertEqual("deterministic_checks", failure["source"])
         self.assertEqual("CHECK-0", failure["findings"][0]["id"])
