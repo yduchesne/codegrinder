@@ -91,6 +91,21 @@ class TestSelectionOverride(unittest.TestCase):
         self.assertIn("grind run --pr PR-003 -f", output.getvalue())
         self.assertEqual("RUNNING", self.worker.entry("PR-001")["execution"]["status"])
 
+    def test_success_without_stage_advancement_requires_recovery_not_duplicate_code(self):
+        self.active(stage="CODE", status="SUCCEEDED")
+        issues = selection_conflicts(self.worker.config, self.worker.state, "PR-001")
+        self.assertEqual(1, len(issues))
+        self.assertTrue(issues[0]["recovery"])
+        self.assertIn("RECOVERY_REQUIRED", override_warning("PR-001", issues))
+        with (
+            patch.object(self.worker, "preflight") as preflight,
+            patch.object(self.worker, "process") as execution,
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.worker.run(pr_id="PR-001"))
+        preflight.assert_not_called()
+        execution.assert_not_called()
+
     def test_healthy_incomplete_other_pr_is_a_selection_conflict_not_recovery(self):
         self.active(stage="WAIT_MERGE", status="SUCCEEDED")
         issues = selection_conflicts(self.worker.config, self.worker.state, "PR-003")
