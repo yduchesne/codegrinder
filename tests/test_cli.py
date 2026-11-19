@@ -41,7 +41,7 @@ class TestCli(unittest.TestCase):
         with self.assertRaises(SystemExit) as result, contextlib.redirect_stdout(io.StringIO()) as out:
             cli.parser().parse_args(["run", "--help"])
         self.assertEqual(0, result.exception.code)
-        for option in ("--guide", "-g", "--roadmap", "-r", "--conf"):
+        for option in ("--guide", "-g", "--roadmap", "-r", "--conf", "--pr", "-f", "--force"):
             self.assertIn(option, out.getvalue())
 
     def test_root_help_includes_config(self):
@@ -80,6 +80,36 @@ class TestCli(unittest.TestCase):
                 result = cli.main(["run", "-g", str(guide), "-r", str(SAMPLE)])
                 self.assertEqual(0, result)
                 controller.return_value.run.assert_called_once_with()
+
+    def test_explicit_pr_is_passed_to_orchestrator_and_force_requires_pr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            guide = root / "guide.md"
+            guide.write_text("Guide")
+            with (
+                patch.object(cli, "_repo_root", return_value=root),
+                patch.object(cli, "state_directory", return_value=root / "state"),
+                patch.object(cli, "DefaultOrchestrator") as controller,
+            ):
+                controller.return_value.run.return_value = 0
+                for args, expected in (
+                    (["--pr", "PR-001"], {"pr_id": "PR-001", "force": False}),
+                    (["--pr", "PR-002", "-f"], {"pr_id": "PR-002", "force": True}),
+                    (["--pr", "PR-002", "--force"], {"pr_id": "PR-002", "force": True}),
+                ):
+                    with self.subTest(args=args):
+                        controller.return_value.run.reset_mock()
+                        self.assertEqual(0, cli.main([
+                            "run", "-g", str(guide), "-r", str(SAMPLE), *args,
+                        ]))
+                        controller.return_value.run.assert_called_once_with(**expected)
+                controller.return_value.run.reset_mock()
+                with contextlib.redirect_stderr(io.StringIO()) as errors:
+                    self.assertEqual(2, cli.main([
+                        "run", "-g", str(guide), "-r", str(SAMPLE), "-f",
+                    ]))
+                self.assertIn("FORCE_REQUIRES_PR", errors.getvalue())
+                controller.return_value.run.assert_not_called()
 
     def test_config_only_execution_uses_both_toml_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
