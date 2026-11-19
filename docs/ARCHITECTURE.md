@@ -347,10 +347,13 @@ rejects:
 
 - Any previous worker that is still **ACTIVE**, whose identity/status is
   **UNKNOWN**, or whose launch is ambiguous without a recorded process ID
+  (including supposedly completed attempts that lack their launched
+  child's identity)
 - An interrupted untracked `PUBLISH` / GitHub operation, invalid attempt
   journal, or legacy state without sufficient evidence
 - The target PR already published under its previous execution (requires
-  external GitHub reconciliation first)
+  external GitHub reconciliation first), including a remote branch from a
+  prior forced generation whose publication cannot be ruled out
 - Any unmet dependency, existing candidate branch/worktree, active runner
   lock, or unverified repo state
 - Any configuration/roadmap/guide hash mismatch, or failed agent preflight
