@@ -174,6 +174,18 @@ class TestSelectionOverride(unittest.TestCase):
                 self.assertEqual("RUNNING", self.worker.entry("PR-001")["execution"]["status"])
                 self.assertEqual(rec["id"], self.worker.entry("PR-001")["execution"]["id"])
 
+    def test_terminal_failed_record_with_live_worker_is_never_forced(self):
+        self.active(status="FAILED", launched=True)
+        issues = selection_conflicts(self.worker.config, self.worker.state, "PR-003")
+        with patch("codegrinder.selection_override.process_status", return_value="ACTIVE"):
+            with self.assertRaisesRegex(SelectionOverrideError, "FORCE_PROCESS_ACTIVE"):
+                assess_force_safety(self.worker, "PR-003", issues)
+        record = self.worker.entry("PR-001")["execution"]
+        record["process"] = None
+        self.worker._save_attempt("PR-001")
+        with self.assertRaisesRegex(SelectionOverrideError, "FORCE_PROCESS_UNKNOWN"):
+            assess_force_safety(self.worker, "PR-003", issues)
+
     def test_unknown_launch_and_untracked_publish_are_not_forceable(self):
         record = self.active(launched=True)
         record["process"] = None
