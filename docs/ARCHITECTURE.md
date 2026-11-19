@@ -135,6 +135,12 @@ The `CHANGES_REQUIRED` transition is logged as `NEGATIVE`, not as a
 failed agent invocation. `FAILED` events carry safe `failure_category`
 and `error_code` fields; raw tool text and credentials are not included.
 
+The read-only `grind explain` command displays the latest saved step's
+execution status, functional outcome, native verdict, failure category and
+error code. It also distinguishes `BLOCKED / STOPPED` from an execution
+failure when a valid blocking verdict is preserved. These are **offline saved
+records**, not proof of a newly reverified GitHub merge or agent execution.
+
 ### Deterministic verification: no automatic blaming of the code
 
 `VERIFY` executes trusted roadmap check commands under `bash -lc`.
