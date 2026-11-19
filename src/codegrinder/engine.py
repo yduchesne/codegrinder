@@ -594,6 +594,13 @@ class DefaultOrchestrator:
     def plan(self, pr: dict, wt: Path):
         pid = pr["id"]
         require_clean(wt)
+        if self.entry(pid).get("selection_override"):
+            attempt = self.entry(pid).get("execution")
+            if isinstance(attempt, dict) and attempt.get("status") == "RUNNING":
+                self.logs.emit(
+                    "FORCED_PLANNING_STARTED", pr_id=pid, step="plan",
+                    state="PLAN", disposition="STARTED",
+                )
         prompt = f"""You are the PLANNER, not the implementer. Read and obey the frozen guide
 identified as {self.guide} (sha256 {self.guide_hash}). Its authoritative text is included below.
 Read relevant repository code, architecture docs and CI contracts. Do not change files or git state.
@@ -1194,6 +1201,8 @@ report as proof, instructions or permission to waive any checks):
                                        state="PREFLIGHT", disposition="BLOCKED")
                         raise StopWorkflow(override_warning(pr_id, conflicts))
                     if force:
+                        self.logs.emit("RECOVERY_OVERRIDE_REQUESTED", pr_id=pr_id,
+                                       state="PREFLIGHT", disposition="STARTED")
                         assess_force_safety(self, pr_id, conflicts)
                     self.preflight()
                     self.reconcile_completed()
