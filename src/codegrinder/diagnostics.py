@@ -203,6 +203,19 @@ def explain(
     ])
     state, state_status = _read_state(state_dir)
     lines.append(f"  State file status: {state_status}")
+    if state is not None:
+        overrides = state.get("override_events")
+        if isinstance(overrides, list) and overrides:
+            previous = overrides[-1]
+            if (isinstance(previous, dict) and
+                    isinstance(previous.get("pr_id"), str) and
+                    isinstance(previous.get("branch"), str)):
+                lines.extend([
+                    f"  Last PR selection override: {previous['pr_id']}",
+                    f"  Forced branch: {previous['branch']}",
+                    f"  Superseded PRs: {', '.join(previous.get('superseded_prs', [])) or 'none'}",
+                    "  Force safety: NOT_EVALUATED (requires exclusive lock and live Git/process checks)",
+                ])
     if roadmap is None:
         lines.extend([
             "  Last PR: N/A", "  Last step: N/A", "  Last stage: N/A",
