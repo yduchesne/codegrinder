@@ -138,6 +138,8 @@ The CLI offers **path overrides**, not CLI switches for models, provider, thinki
 | CLI syntax | Purpose | Configuration relationship |
 | --- | --- | --- |
 | `grind run` | Execute or resume the roadmap | Uses TOML paths or requires both path flags |
+| `grind run --pr BM-15` | Select exactly one PR | Respects dependencies; refuses conflicting unfinished state |
+| `grind run --pr BM-15 -f` | Start isolated fresh planning for selected PR | Audited supersession only if all force safety checks pass |
 | `grind explain` | Inspect resolved settings and saved workflow state (offline/read-only) | Optional paths display as N/A |
 | `grind --conf PATH run` | Select another TOML file | Overrides default `./grind.toml` discovery; explicit file must exist |
 | `grind run --conf PATH` | Equivalent placement after the command | Same effect; specify `--conf` only once |
@@ -159,6 +161,41 @@ grind --conf /etc/codegrinder/team.toml explain
 ```
 
 All CLI and TOML paths support `~` expansion; relative paths are resolved against the process's **current working directory**. Locating `--conf` in another directory never changes that base. The same rule applies to `[logging].directory`.
+
+## Explicit PR selection and recovery override
+
+The `run` CLI can select exactly one PR from the configured roadmap.
+The identifier must match the roadmap's `## PR-ID: title` heading
+*exactly*, including case and punctuation; spaces are not valid PR IDs.
+
+```bash
+grind run                 # Normal automatic recovery and ordered roadmap
+grind run --pr BM-15      # Run only BM-15, without silently recovering other PRs
+grind run --pr BM-15 -f   # Controlled supersession, fresh PLAN if safety gates pass
+grind run --pr BM-15 --force
+```
+
+`--force` without `--pr` is rejected. Without force, an unresolved
+attempt on any PR, or another active unfinished PR, produces a warning
+(`RECOVERY_REQUIRED` or `PR_SELECTION_CONFLICT`) advising ordinary
+`grind run` for safe recovery or `--pr ... -f` to **request** supersession.
+The warning itself does not authorize bypassing the checks.
+
+A forced selection **still requires** verified merged dependencies and
+reliable evidence that no previous worker remains active. A missing
+process identity, untracked Git publish attempt, conflicting branch, or
+existing published target PR blocks forced execution. No worktree, branch,
+log, plan or result from the old run is deleted. Instead, Codegrinder
+archives the previous target state and starts fresh planning in a unique
+`prflow/<PR-ID>-force-<generation>` branch/worktree, with new artifact
+paths. The selected invocation stops once **that PR** has merged; it does
+not continue to later PRs.
+
+A saved `STOPPED` PR superseded by another selection remains visible in
+the workflow state. Run `grind explain` to see the last saved override,
+branch and superseded PR IDs. Explain is offline/read-only and cannot
+authorize a force override. See [Architecture: PR selection](ARCHITECTURE.md#explicit-pr-selection-and-controlled-forced-planning)
+and [Troubleshooting](TROUBLESHOOTING.md) for the safety matrix.
 
 ## State versus logs
 
