@@ -192,9 +192,27 @@ class TestSelectionOverride(unittest.TestCase):
         with self.assertRaisesRegex(SelectionOverrideError, "FORCE_EXISTING_TARGET_PR"):
             assess_force_safety(self.worker, "PR-001", [])
         self.worker.entry("PR-001").pop("pr_number")
-        with patch("codegrinder.engine.git", return_value="prflow/PR-001-force-00000001"):
+        def existing_candidate(_repo, *args):
+            return "prflow/PR-001-force-00000001" if args[:2] == ("branch", "--list") else ""
+        with patch("codegrinder.engine.git", side_effect=existing_candidate):
             with self.assertRaisesRegex(SelectionOverrideError, "FORCE_BRANCH_EXISTS"):
                 assess_force_safety(self.worker, "PR-001", [])
+        def existing_original_remote(_repo, *args):
+            if args[:3] == ("ls-remote", "--heads", "origin") and args[3] == "prflow/PR-001":
+                return "abc\\trefs/heads/prflow/PR-001"
+            return ""
+        with patch("codegrinder.engine.git", side_effect=existing_original_remote):
+            with self.assertRaisesRegex(SelectionOverrideError, "FORCE_TARGET_REMOTE_BRANCH_PRESENT"):
+                assess_force_safety(self.worker, "PR-001", [])
+
+    def test_legacy_unjournaled_target_prompts_for_recovery_instead_of_resuming(self):
+        self.worker.entry("PR-003")["stage"] = "CODE"
+        conflicts = selection_conflicts(self.worker.config, self.worker.state, "PR-003")
+        self.assertEqual(1, len(conflicts))
+        self.assertTrue(conflicts[0]["recovery"])
+        self.assertIn("RECOVERY_REQUIRED", override_warning("PR-003", conflicts))
+        with self.assertRaisesRegex(SelectionOverrideError, "FORCE_LEGACY_STATE_UNSAFE"):
+            assess_force_safety(self.worker, "PR-003", conflicts)
 
     def test_selected_execution_stops_after_selected_pr_merges(self):
         calls = []
