@@ -197,6 +197,21 @@ class TestSelectionOverride(unittest.TestCase):
         self.assertEqual(self.state / "worktrees" / "PR-001-force-00000002",
                          self.worker.wt("PR-001"))
 
+    def test_force_archives_completed_but_unmerged_target_stage(self):
+        rec = self.active(status="SUCCEEDED")
+        self.worker.entry("PR-001")["stage"] = "VERIFY"
+        self.worker.save()
+        with patch("codegrinder.engine.git", return_value=""):
+            issues = selection_conflicts(self.worker.config, self.worker.state, "PR-001")
+            self.assertEqual([], issues)
+            commit_force_selection(self.worker, "PR-001", issues)
+        event = self.worker.state["override_events"][-1]
+        self.assertEqual(["PR-001"], event["superseded_prs"])
+        self.assertEqual("PLAN", self.worker.entry("PR-001")["stage"])
+        old = json.loads((self.state / "overrides" / "PR-001" / "00000001.json").read_text())
+        self.assertEqual("VERIFY", old["stage"])
+        self.assertEqual(rec["id"], old["execution"]["id"])
+
     def test_active_or_unknown_prior_worker_cannot_be_forced(self):
         for state in ("ACTIVE", "UNKNOWN"):
             with self.subTest(process=state):
