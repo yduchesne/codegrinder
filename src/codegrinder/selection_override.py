@@ -101,7 +101,12 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
     if (target.get("pr_number") or target.get("published_head") or
             target.get("stage") in {"PUBLISH", "REVIEW", "WAIT_MERGE"}):
         raise SelectionOverrideError(f"FORCE_EXISTING_TARGET_PR: {pr_id} requires GitHub reconciliation")
-    for conflict in conflicts:
+    subjects = list(conflicts)
+    if isinstance(target.get("execution"), dict) and not any(
+        item["pr_id"] == pr_id for item in subjects
+    ):
+        subjects.append({"pr_id": pr_id})
+    for conflict in subjects:
         pid = conflict["pr_id"]
         entry = orch.state["prs"][pid]
         record = entry.get("execution")
