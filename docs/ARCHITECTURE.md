@@ -295,6 +295,121 @@ shared host. Codegrinder's existing workflow-scoped lock prevents duplicated
 invocations of *one* workflow; it does **not** enforce repository-wide or
 host-wide isolation.
 
+## Explicit PR selection and controlled forced planning
+
+Normally `grind run` uses the injected `PRSelector` to execute the
+first unfinished eligible roadmap PR and continue through later PRs.
+The operator can instead specify **one exact roadmap identifier**:
+
+```bash
+grind run --pr BM-15
+grind run --pr BM-15 -f
+# or: grind run --pr BM-15 --force
+```
+
+Identifiers are matched **exactly** to roadmap `## <PR-ID>: ...` headings;
+spaces are not permitted by the versioned roadmap parser (`"PR 15"`
+is not a valid ID; `PR-15` or `BM-15` is). `--pr` executes **only that
+PR**, not all remaining roadmap entries. Once GitHub confirms the selected
+PR merged, the invocation exits without claiming the whole roadmap is done.
+`-f/--force` is invalid without `--pr`.
+
+### Normal explicit selection
+
+Before launching agents, Codegrinder inspects all saved PR entries under
+the workflow's exclusive `runner.lock`. It distinguishes a **recovery
+conflict** (e.g. an interrupted `RUNNING` attempt or failed attempt) from
+a **selection conflict** (e.g. another PR legitimately waiting for merge).
+An explicit selection never silently recovers an unrelated incomplete PR.
+
+If there is any conflict, `grind run --pr BM-15` returns a warning and
+does not start agents:
+
+```text
+STOP: RECOVERY_REQUIRED: requested BM-15; unfinished execution: ...
+Run 'grind run' to reconcile the existing workflow, or
+'grind run --pr BM-15 -f' to request a controlled fresh PLAN.
+```
+
+For a healthy unfinished previous PR the warning begins
+`PR_SELECTION_CONFLICT`. Neither warning claims that force is always safe
+or available. An unknown PR ID, already merged PR, invalid input, or
+unmerged/unverified required dependency is rejected regardless of force.
+Completed dependencies are **reverified against GitHub**, not assumed
+from a saved `DONE` label.
+
+### Forced supersession — safety boundary
+
+`grind run --pr BM-15 -f` authorizes abandoning an unfinished *operator
+workflow*, **not** deleting its evidence, bypassing source scope restrictions,
+or killing a previous agent process. Before changing state, the orchestrator
+rejects:
+
+- Any previous worker that is still **ACTIVE**, whose identity/status is
+  **UNKNOWN**, or whose launch is ambiguous without a recorded process ID
+- An interrupted untracked `PUBLISH` / GitHub operation, invalid attempt
+  journal, or legacy state without sufficient evidence
+- The target PR already published under its previous execution (requires
+  external GitHub reconciliation first)
+- Any unmet dependency, existing candidate branch/worktree, active runner
+  lock, or unverified repo state
+- Any configuration/roadmap/guide hash mismatch, or failed agent preflight
+
+After these checks, Codegrinder persists an audit event, marks eligible
+previous `RUNNING` attempts `SUPERSEDED`, and retains their process
+evidence and journals. Older, unfinished PR entries become `STOPPED` with
+a `superseded_by` reference, so normal sequential execution does not
+silently restart them. A previous attempt of the **selected** PR is
+snapshotted under `<state-dir>/overrides/<PR-ID>/<generation>.json`
+and referenced by its SHA-256 digest. Original logs and artifacts are
+retained.
+
+The new planning attempt uses a **distinct branch, worktree, and artifact
+directory**, based on a monotonically increasing generation:
+
+```text
+branch:       prflow/BM-15-force-00000001
+worktree:     <state-dir>/worktrees/BM-15-force-00000001
+new artifacts:<state-dir>/artifacts/BM-15-force-00000001
+old artifacts:<state-dir>/artifacts/BM-15       (untouched)
+```
+
+Any existing file changes in the previous worktree remain untouched.
+No previous branch is reset, PR is deleted, or verification/review check
+is bypassed. The newly selected PR begins at **PLAN**, then follows the
+usual plan/coding/verification/publication/review/merge state machine. An
+additional force invocation creates a *new* generation, not a reuse of the
+earlier forced worktree. If the prior target has a published PR, an operator
+must reconcile/close that PR first rather than creating a competing PR with
+the same roadmap identifier.
+
+The lifecycle emits `PR_SELECTION_OVERRIDE`,
+`RECOVERY_OVERRIDE_REQUESTED`, `RECOVERY_OVERRIDE_APPROVED`,
+`ATTEMPT_SUPERSEDED`, and `FORCED_PLANNING_STARTED` events as
+applicable. `state.json` retains the last selected override and an
+append-only list of override metadata; `grind explain` reports the
+latest stored selection and supersession. It does **not** claim a force
+operation is safe from offline evidence alone; process, Git, and workspace
+checks are performed only by the locked execution path.
+
+### Operator decision table
+
+| Requested action and evidence | Decision |
+| --- | --- |
+| `grind run` | Existing automatic crash recovery then sequential PR selection |
+| `grind run --pr BM-15`, no conflicting state, satisfied dependencies | Run only BM-15 from its existing durable stage |
+| `--pr` while another attempt needs recovery or another PR is unfinished | Stop with actionable warning; no silent recovery |
+| `--pr BM-15 -f`, previous agents provably exited, no remote target conflicts | Audit supersession, create isolated workspace, start fresh PLAN |
+| `--force` but prior worker is active/unknown, Git operation ambiguous, or journal invalid | Stop for manual reconciliation |
+| `--force` but required dependency not verified merged | Stop; never skip dependency |
+| `--force` and target already published or completed | Stop; do not create duplicate PR |
+| `grind run -f` without `--pr` | Invalid configuration |
+
+The override changes **selection** and the authorized planning workspace,
+not the workflow's correctness contracts. The existing per-workflow lock
+still does not provide a repository-wide lock; concurrent separate
+roadmaps remain unsafe (see [Concurrency](#concurrency-running-several-grind-instances)).
+
 ## Restart and crash recovery
 
 Recovery is **evidence-driven and fail-closed**. Before launching agents or selecting another PR, `RecoveryCoordinator.reconcile()` inspects unfinished attempts, ensures the matching journal is present and valid, checks whether a prior agent process is still active (guarding against PID reuse), compares the current worktree to the baseline, and examines any attempt-specific terminal or publishing evidence. An already committed transition is checked against the artifacts required for its destination stage.
