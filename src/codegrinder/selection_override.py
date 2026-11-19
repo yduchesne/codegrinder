@@ -48,15 +48,25 @@ def selection_conflicts(config: dict, state: dict, selected_id: str) -> list[dic
             raise SelectionOverrideError(f"PR_SELECTION_FOREIGN_STATE: {pid}")
         if not isinstance(ent, dict):
             raise SelectionOverrideError(f"PR_SELECTION_INVALID_STATE: {pid}")
-        if is_completed(ent.get("stage")) or ent.get("superseded_by"):
+        if is_completed(ent.get("stage")):
             continue
         record = ent.get("execution")
         status = record.get("status") if isinstance(record, dict) else None
         stage = ent.get("stage", "PLAN")
-        # Reached a durable terminal stage, with no attempt to recover, or an
-        # attempt that failed before its state was advanced.
+        if ent.get("superseded_by") and stage == "STOPPED" and status != "RUNNING":
+            continue
+        # An attempt that succeeded without moving beyond its own stage has
+        # ambiguous side effects; a direct --pr must never re-run it blindly.
+        stuck_after_success = (
+            isinstance(record, dict) and status in {"SUCCEEDED", "RECOVERED"}
+            and record.get("stage") == stage
+            and stage not in {"WAIT_MERGE", "STOPPED"}
+        )
         legacy_unjournaled = status is None and stage not in {"PLAN", "DONE", "STOPPED"}
-        unresolved = status in {"RUNNING", "FAILED"} or stage == "STOPPED" or legacy_unjournaled
+        unresolved = (
+            status in {"RUNNING", "FAILED", "INTERRUPTED"} or
+            stage == "STOPPED" or legacy_unjournaled or stuck_after_success
+        )
         # Only the selected PR may resume from a legitimate nonterminal stage.
         busy_other = pid != selected_id and (stage != "PLAN" or status is not None)
         if unresolved or busy_other:
