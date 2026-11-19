@@ -255,6 +255,35 @@ class ControllerFixture(unittest.TestCase):
         self.assertTrue(wait(dict(base, state="MERGED", mergedAt="today", mergeCommit={"oid": "merged-sha"}))[0])
         self.assertEqual("DONE", ent["stage"])
 
+    def test_failed_github_required_ci_is_blocked_verdict_not_runner_failure(self):
+        entry = self.controller.entry(self.pid)
+        entry.update({"stage": "WAIT_MERGE", "pr_number": 8, "accepted_head": "sha"})
+        info = {"state": "OPEN", "headRefOid": "sha", "baseRefName": "main"}
+
+        def fake_run(cmd, cwd, **kwargs):
+            if cmd[:3] == ["gh", "pr", "view"]:
+                return completed(json.dumps(info))
+            if cmd[:3] == ["gh", "pr", "checks"]:
+                return completed(json.dumps([
+                    {"name": "REPLACE_WITH_REAL_GITHUB_CHECK_NAME", "bucket": "fail"},
+                ]))
+            raise AssertionError(f"unexpected subprocess call: {cmd}")
+
+        with (
+            patch.object(self.controller, "prepare", return_value=(self.wt, "branch")),
+            patch.object(engine, "run", side_effect=fake_run),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(2, self.controller.process(follow=False))
+        self.assertEqual("STOPPED", entry["stage"])
+        self.assertEqual("SUCCEEDED", entry["execution"]["status"])
+        last = entry["last_step_result"]
+        self.assertEqual(
+            ("SUCCEEDED", "BLOCKED", "REQUIRED_CI_FAILED"),
+            (last["execution_status"], last["functional_outcome"], last["verdict"]),
+        )
+
     def test_next_pr_dependency_and_completion(self):
         self.assertEqual("PR-001", self.controller.next_pr()["id"])
         self.controller.entry("PR-001")["stage"] = "DONE"
