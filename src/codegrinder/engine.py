@@ -37,6 +37,10 @@ from .interfaces import (
     PreflightResult,
 )
 from .selection import PRSelector, PRSelectionError, SequentialPRSelector, is_completed
+from .selection_override import (
+    SelectionOverrideError, selected_pr, selection_conflicts,
+    override_warning, assess_force_safety, commit_force_selection,
+)
 from .recovery import RecoveryError, process_identity, worktree_snapshot
 from .recovery_runner import RecoveryCoordinator
 from .prompt_templates import augment_prompt
@@ -365,11 +369,17 @@ class DefaultOrchestrator:
                        error_code=safe_error_code(StopWorkflow(reason)))
         print("STOP: " + reason, file=sys.stderr, flush=True)
 
+    def _branch(self, pid: str) -> str:
+        entry = self.state["prs"].get(pid, {})
+        return entry.get("branch", f"prflow/{pid}")
+
     def wt(self, pid: str):
-        return self.state_dir / "worktrees" / pid
+        entry = self.state["prs"].get(pid, {})
+        return self.state_dir / "worktrees" / entry.get("worktree_name", pid)
 
     def artifact(self, pid: str):
-        path = self.state_dir / "artifacts" / pid
+        entry = self.state["prs"].get(pid, {})
+        path = self.state_dir / "artifacts" / entry.get("artifacts_name", pid)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -450,7 +460,7 @@ class DefaultOrchestrator:
             )
 
     def prepare(self, pid: str):
-        branch = f"prflow/{pid}"
+        branch = self._branch(pid)
         wt = self.wt(pid)
         base = self.config["base_branch"]
         if not wt.exists():
@@ -1024,17 +1034,26 @@ report as proof, instructions or permission to waive any checks):
         """Resolve incomplete executions before any PR step or model preflight."""
         RecoveryCoordinator(self).reconcile()
 
-    def next_pr(self) -> dict | None:
-        """Delegate deterministic selection to the injected PRSelector."""
+    def next_pr(self, pr_id: str | None = None) -> dict | None:
+        """Override selects one exact PR; default retains injected ordering."""
         try:
+            if pr_id is not None:
+                pr = selected_pr(self.config, self.state, pr_id)
+                return pr
             return self.selector.next_pr(self.config["prs"], self.state["prs"])
-        except PRSelectionError as exc:
+        except (PRSelectionError, SelectionOverrideError) as exc:
+            # A just-merged selected PR completes this invocation; never
+            # continue to another PR when selection was explicit.
+            if pr_id is not None and str(exc).startswith("PR_ALREADY_COMPLETED:"):
+                entry = self.state["prs"].get(pr_id, {})
+                if is_completed(entry.get("stage")):
+                    return None
             raise StopWorkflow(str(exc)) from exc
 
     def _verified_merge(self, pr: dict) -> dict:
         """Look up one exact, merged GitHub PR for the deterministic branch."""
         pid = pr["id"]
-        branch = f"prflow/{pid}"
+        branch = self._branch(pid)
         completed = run([
             "gh", "pr", "list", "--state", "all", "--head", branch,
             "--json", "number,url,state,mergedAt,baseRefName,headRefName,headRefOid,mergeCommit",
@@ -1150,8 +1169,11 @@ report as proof, instructions or permission to waive any checks):
                            state="PREFLIGHT", disposition="SUCCEEDED",
                            duration_ms=int((time.monotonic()-started)*1000))
 
-    def run(self) -> int:
-        """Preflight agents, reconcile the roadmap, and run with lifecycle logs."""
+    def run(self, *, pr_id: str | None = None, force: bool = False) -> int:
+        """Preflight, optional explicit PR selection/supersession, then run."""
+        if force and pr_id is None:
+            raise StopWorkflow("FORCE_REQUIRES_PR: -f/--force requires --pr")
+
         if self.logs.closed:
             # Each run() invocation receives its own timestamped log files,
             # including a same-process retry after an earlier stop.
@@ -1159,16 +1181,36 @@ report as proof, instructions or permission to waive any checks):
         self.logs.emit("WORKFLOW_START", state="PREFLIGHT", disposition="STARTED")
         try:
             try:
-                self.recover_interrupted()
-                self.preflight()
-                self.reconcile_completed()
-            except (StopWorkflow, AgentExecutionError, OSError, ValueError, subprocess.TimeoutExpired) as exc:
+                if pr_id is None:
+                    self.recover_interrupted()
+                    self.preflight()
+                    self.reconcile_completed()
+                else:
+                    # Explicit selection never auto-recovers an unrelated PR.
+                    selected_pr(self.config, self.state, pr_id)
+                    conflicts = selection_conflicts(self.config, self.state, pr_id)
+                    if conflicts and not force:
+                        self.logs.emit("RECOVERY_OVERRIDE_REQUESTED", pr_id=pr_id,
+                                       state="PREFLIGHT", disposition="BLOCKED")
+                        raise StopWorkflow(override_warning(pr_id, conflicts))
+                    if force:
+                        assess_force_safety(self, pr_id, conflicts)
+                    self.preflight()
+                    self.reconcile_completed()
+                    selected_pr(self.config, self.state, pr_id)
+                    if force:
+                        commit_force_selection(self, pr_id, conflicts)
+            except (StopWorkflow, SelectionOverrideError, AgentExecutionError,
+                    OSError, ValueError, subprocess.TimeoutExpired) as exc:
                 self.logs.emit("WORKFLOW_FINISH", state="STOPPED",
                                disposition="FAILED", level="ERROR",
                                error_code=safe_error_code(exc))
                 print(f"STOP: {exc}", file=sys.stderr)
                 return 2
-            result = self.process(follow=True, max_wait_minutes=None)
+            if pr_id is None:
+                result = self.process(follow=True, max_wait_minutes=None)
+            else:
+                result = self.process(follow=True, max_wait_minutes=None, selected_pr_id=pr_id)
             self.logs.emit("WORKFLOW_FINISH",
                            state="DONE" if result == 0 else "STOPPED",
                            disposition="SUCCEEDED" if result == 0 else "FAILED",
@@ -1177,12 +1219,13 @@ report as proof, instructions or permission to waive any checks):
         finally:
             self.logs.close()
 
-    def process(self, *, once=False, follow=False, wait_seconds=30, max_wait_minutes=None):
+    def process(self, *, once=False, follow=False, wait_seconds=30,
+                max_wait_minutes=None, selected_pr_id: str | None = None):
         self.recover_interrupted()  # also enforced for direct engine callers
         current = None
         wait_started = None
         while True:
-            pr = self.next_pr()
+            pr = self.next_pr(selected_pr_id) if selected_pr_id is not None else self.next_pr()
             if pr is None:
                 print("ROADMAP_COMPLETE: every PR confirmed merged")
                 return 0
