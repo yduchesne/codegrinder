@@ -22,14 +22,22 @@ uv tool install --python 3.14 \
 
 For reproducible versions, install a **release tag after that tag has been created** (for example, `@v0.1.0`). A Git-tag install is preferred for ordinary users; `@main` is for following development. `uv` installs the `grind` CLI in an isolated tool environment. Ensure the tool executable directory reported by `uv tool dir --bin` is on `PATH`.
 
-Codegrinder requires Python 3.14+ and, for actual workflow execution, independently installed and authenticated `git`, `gh`, `codex`, and `pi` CLIs. An installation does **not** set up external agents or their credentials. The existing `./install.sh` is for contributors building from a source checkout (development dependencies, pre-commit, and an editable tool install), **not** for ordinary users. Workflows are run from the target project's Git checkout.
+Codegrinder requires Python 3.14+ and, for actual workflow execution, independently installed and authenticated `git`, `gh`, `codex`, and `pi` CLIs. An installation does **not** set up external agents or their credentials. See [CLI installation and authentication](docs/INSTALLATION.md#external-cli-installation-and-authentication), including official upstream links, and the [first-run checklist](docs/GETTING_STARTED.md). The existing `./install.sh` is for contributors building from a source checkout (development dependencies, pre-commit, and an editable tool install), **not** for ordinary users. Workflows are run from the target project's Git checkout.
 
 ## Documentation
 
-- [Installation](docs/INSTALLATION.md) — prerequisites, GitHub branch/tag installation, verification, upgrades, uninstall, and contributor setup
-- [Releasing](docs/RELEASING.md) — maintainer versioning, CI gates, Git-tag release procedure, and rollback policy
-- [Architecture](docs/ARCHITECTURE.md) — interfaces, agent adapters, lifecycle diagrams, durable state, and crash-recovery decision matrix
-- [Configuration](docs/CONFIGURATION.md) — `grind.toml`, defaults, path resolution, CLI overrides, and logging
+**New to Codegrinder?** Start with [Getting started](docs/GETTING_STARTED.md):
+install the CLIs, authenticate GitHub/Codex/Pi, prepare a small roadmap and
+authoring guide, configure `grind.toml`, run `grind explain`, then review
+your first real PR. For failures, use
+[Troubleshooting](docs/TROUBLESHOOTING.md).
+
+- [Getting started](docs/GETTING_STARTED.md) — practical, complete first-PR walkthrough and official CLI references
+- [Installation](docs/INSTALLATION.md) — `uv` installation plus each external CLI's installation, authentication, upgrades and uninstall
+- [Configuration](docs/CONFIGURATION.md) — `grind.toml`, models, providers, defaults, paths, overrides and logging
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — authentication, models, verification failures, recovery and concurrency
+- [Architecture](docs/ARCHITECTURE.md) — step outcomes, interfaces, lifecycle, durable state and recovery
+- [Releasing](docs/RELEASING.md) — maintainer versioning, CI gates, Git-tag releases and rollback
 - [Security and SBOM](docs/SECURITY_AND_SBOM.md) — development checks and supply-chain controls
 
 ## CLI
