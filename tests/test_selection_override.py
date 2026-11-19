@@ -104,7 +104,7 @@ class TestSelectionOverride(unittest.TestCase):
         (old / "original.txt").write_text("untouched partial edits")
         # Pretend valid non-conflicting Git branch and remote lookups.
         with (
-            patch("codegrinder.selection_override.git", return_value=""),
+            patch("codegrinder.engine.git", return_value=""),
             patch.object(self.worker, "preflight"),
             patch.object(self.worker, "reconcile_completed"),
             patch.object(self.worker, "process", return_value=0) as process,
@@ -137,7 +137,7 @@ class TestSelectionOverride(unittest.TestCase):
         old_worktree = self.worker.wt("PR-001")
         old_worktree.mkdir(parents=True)
         (old_worktree / "partial.py").write_text("# keep this")
-        with patch("codegrinder.selection_override.git", return_value=""):
+        with patch("codegrinder.engine.git", return_value=""):
             issues = selection_conflicts(self.worker.config, self.worker.state, "PR-001")
             commit_force_selection(self.worker, "PR-001", issues)
         self.assertEqual("PLAN", self.worker.entry("PR-001")["stage"])
@@ -148,10 +148,10 @@ class TestSelectionOverride(unittest.TestCase):
         self.assertEqual("# keep this", (old_worktree / "partial.py").read_text())
         archived = json.loads((self.state / "overrides" / "PR-001" / "00000001.json").read_text())
         self.assertEqual(rec["id"], archived["execution"]["id"])
-        self.assertEqual(rec["id"], self.worker.entry("PR-001")["attempt_counter"] and rec["id"])
+        self.assertEqual(1, self.worker.entry("PR-001")["attempt_counter"])
         self.assertEqual(1, self.worker.state["override_counter"])
         self.assertTrue(self.worker.entry("PR-001")["selection_override"]["prior_target_sha256"])
-        with patch("codegrinder.selection_override.git", return_value=""):
+        with patch("codegrinder.engine.git", return_value=""):
             commit_force_selection(self.worker, "PR-001", [])
         self.assertEqual("prflow/PR-001-force-00000002", self.worker._branch("PR-001"))
         self.assertTrue((self.state / "overrides" / "PR-001" / "00000002.json").exists())
@@ -163,7 +163,7 @@ class TestSelectionOverride(unittest.TestCase):
                 rec = self.active(launched=True)
                 with (
                     patch("codegrinder.selection_override.process_status", return_value=state),
-                    patch("codegrinder.selection_override.git") as git,
+                    patch("codegrinder.engine.git") as git,
                 ):
                     with self.assertRaisesRegex(SelectionOverrideError, f"FORCE_PROCESS_{state}"):
                         assess_force_safety(
@@ -192,7 +192,7 @@ class TestSelectionOverride(unittest.TestCase):
         with self.assertRaisesRegex(SelectionOverrideError, "FORCE_EXISTING_TARGET_PR"):
             assess_force_safety(self.worker, "PR-001", [])
         self.worker.entry("PR-001").pop("pr_number")
-        with patch("codegrinder.selection_override.git", return_value="prflow/PR-001-force-00000001"):
+        with patch("codegrinder.engine.git", return_value="prflow/PR-001-force-00000001"):
             with self.assertRaisesRegex(SelectionOverrideError, "FORCE_BRANCH_EXISTS"):
                 assess_force_safety(self.worker, "PR-001", [])
 
