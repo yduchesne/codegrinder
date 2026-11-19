@@ -205,6 +205,7 @@ class TestExplain(unittest.TestCase):
         self.assertIn("Last recorded step: REVIEW (attempt PR-001-00000004)", output)
         self.assertIn("Step execution status: SUCCEEDED", output)
         self.assertIn("Functional outcome: BLOCKED", output)
+        self.assertIn("Last disposition: BLOCKED / STOPPED (valid step verdict)", output)
         self.assertIn("Step verdict: STOP", output)
         self.assertIn("Failure category: N/A", output)
         self.assertEqual(prior, (self.state / "state.json").read_bytes())
