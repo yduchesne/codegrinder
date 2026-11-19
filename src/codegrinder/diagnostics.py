@@ -210,10 +210,17 @@ def explain(
             if (isinstance(previous, dict) and
                     isinstance(previous.get("pr_id"), str) and
                     isinstance(previous.get("branch"), str)):
+                raw_superseded = previous.get("superseded_prs", [])
+                superseded = (
+                    ", ".join(raw_superseded) or "none"
+                    if isinstance(raw_superseded, list) and all(
+                        isinstance(item, str) for item in raw_superseded
+                    ) else "INVALID (saved override metadata)"
+                )
                 lines.extend([
                     f"  Last PR selection override: {previous['pr_id']}",
                     f"  Forced branch: {previous['branch']}",
-                    f"  Superseded PRs: {', '.join(previous.get('superseded_prs', [])) or 'none'}",
+                    f"  Superseded PRs: {superseded}",
                     "  Force safety: NOT_EVALUATED (requires exclusive lock and live Git/process checks)",
                 ])
     if roadmap is None:
