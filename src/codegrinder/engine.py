@@ -916,7 +916,9 @@ report as proof, instructions or permission to waive any checks):
         if not required:
             raise StopWorkflow("NO_REQUIRED_CI_CONFIGURED: specify required_checks before merging")
         if any(names.get(name) in ("fail", "cancel") for name in required):
-            raise StopWorkflow("REQUIRED_CI_FAILED: " + repr(names))
+            # GitHub reported a negative/cancelled check outcome. It does not
+            # prove the check runner itself failed or that source is defective.
+            raise OutcomeBlocked("REQUIRED_CI_FAILED: " + repr(names))
         checks_passed = all(names.get(name) == "pass" for name in required)
         if self.config.get("merge_mode", "manual") == "auto" and checks_passed and not ent.get("merge_requested"):
             # GitHub enforces branch protection/required approvals. Do not bypass them.
@@ -985,7 +987,10 @@ report as proof, instructions or permission to waive any checks):
                 )
         except OutcomeBlocked:
             if self.entry(pid)["execution"].get("step_result") is None:
-                self._record_step_result(pid, stage=stage, outcome="BLOCKED", verdict="BLOCKED")
+                self._record_step_result(
+                    pid, stage=stage, outcome="BLOCKED",
+                    verdict="REQUIRED_CI_FAILED" if stage == "WAIT_MERGE" else "BLOCKED",
+                )
             # The agent successfully produced a blocking verdict, not an
             # execution error. The workflow still stops for operator action.
             self._finish_attempt(pid, "SUCCEEDED")
