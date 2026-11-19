@@ -120,6 +120,7 @@ flowchart TD
 | `REVIEW`, validated `CHANGES_REQUIRED` | `SUCCEEDED` | `NEGATIVE / CHANGES_REQUIRED` | Persist feedback and replan |
 | `REVIEW`, valid `STOP` | `SUCCEEDED` | `BLOCKED / STOP` | Controlled stop |
 | `WAIT_MERGE`, GitHub PR still open | `SUCCEEDED` | `PENDING / WAITING` | Wait/recheck without claiming completion |
+| `WAIT_MERGE`, required GitHub CI failed or was canceled | `SUCCEEDED` | `BLOCKED / REQUIRED_CI_FAILED` | Stop for investigation; CI outcome alone does not identify code versus runner failure |
 | Missing command, disk exhaustion, unavailable runner | `FAILED` | No functional outcome; `ENVIRONMENT` | Stop; repair execution environment |
 | Invalid result schema or unclassifiable check failure | `FAILED` | No functional outcome; `PROTOCOL` | Stop; investigate evidence |
 | Interrupted attempt being reconciled | `INTERRUPTED` | No inferred quality verdict; `RECOVERY` | Use the [recovery decision matrix](#recovery-decision-matrix) |
