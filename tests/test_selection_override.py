@@ -241,6 +241,46 @@ class TestSelectionOverride(unittest.TestCase):
         with self.assertRaisesRegex(SelectionOverrideError, "FORCE_LEGACY_STATE_UNSAFE"):
             assess_force_safety(self.worker, "PR-003", conflicts)
 
+    def test_force_refuses_missing_or_mismatched_attempt_journal(self):
+        record = self.active()
+        issues = selection_conflicts(self.worker.config, self.worker.state, "PR-003")
+        path = self.worker._attempt_path("PR-001", record["id"])
+        path.unlink()
+        with self.assertRaisesRegex(SelectionOverrideError, "FORCE_JOURNAL_INVALID"):
+            assess_force_safety(self.worker, "PR-003", issues)
+        path.write_text(json.dumps({"id": record["id"], "stage": "REVIEW"}))
+        with self.assertRaisesRegex(SelectionOverrideError, "FORCE_JOURNAL_MISMATCH"):
+            assess_force_safety(self.worker, "PR-003", issues)
+
+    def test_force_cannot_skip_unmerged_roadmap_dependency(self):
+        with (
+            patch("codegrinder.engine.git", return_value=""),
+            patch.object(self.worker, "preflight"),
+            patch.object(self.worker, "reconcile_completed"),
+            patch.object(self.worker, "process") as process,
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            self.assertEqual(2, self.worker.run(pr_id="PR-002", force=True))
+        process.assert_not_called()
+        self.assertIn("PR_DEPENDENCIES_UNSATISFIED", stderr.getvalue())
+        self.assertNotIn("override_events", self.worker.state)
+
+    def test_force_cannot_skip_a_target_already_at_publish_boundary(self):
+        self.worker.entry("PR-001")["stage"] = "PUBLISH"
+        with self.assertRaisesRegex(SelectionOverrideError, "FORCE_EXISTING_TARGET_PR"):
+            assess_force_safety(self.worker, "PR-001", [])
+
+    def test_force_can_supersede_known_healthy_waiting_pr_without_touching_remote(self):
+        record = self.active(stage="WAIT_MERGE", status="SUCCEEDED")
+        with patch("codegrinder.engine.git", return_value=""):
+            conflicts = selection_conflicts(self.worker.config, self.worker.state, "PR-003")
+            commit_force_selection(self.worker, "PR-003", conflicts)
+        previous = self.worker.entry("PR-001")
+        self.assertEqual("STOPPED", previous["stage"])
+        self.assertEqual("SUCCEEDED", previous["execution"]["status"])
+        self.assertEqual(record["id"], previous["execution"]["id"])
+        self.assertEqual("PR-003", previous["superseded_by"]["pr_id"])
+
     def test_selected_execution_stops_after_selected_pr_merges(self):
         calls = []
         def advance(pr):
