@@ -1,0 +1,39 @@
+# The same hooks run locally and in CI; do not use SKIP to bypass security gates.
+# Local Python tools are managed by uv and run from the project's locked environment.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: Ruff lint (Python 3.14)
+        entry: uv run --no-sync ruff check src tests scripts
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: mypy
+        name: mypy static typing
+        entry: uv run --no-sync mypy src/codegrinder
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: bandit
+        name: Bandit Python security analysis (medium+ severity/confidence)
+        entry: uv run --no-sync bandit -r -q -ll -ii src/codegrinder scripts
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: semgrep
+        name: Semgrep pinned local security rules
+        entry: uv run --no-sync semgrep scan --config security/semgrep-python.yaml --error --metrics=off src/codegrinder scripts
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: sbom
+        name: Generate and schema-validate CycloneDX production-dependency SBOM
+        entry: uv run --no-sync python scripts/sbom.py generate --output .artifacts/sbom/codegrinder.cdx.json
+        language: system
+        pass_filenames: false
+        always_run: true
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

@@ -1,0 +1,21 @@
+rules:
+  - id: codegrinder-python-dangerous-eval
+    message: Avoid eval; parse input with bounded, explicit data formats.
+    severity: ERROR
+    languages: [python]
+    pattern: eval(...)
+  - id: codegrinder-python-unsafe-unpickle
+    message: Untrusted pickle deserialization can execute arbitrary code.
+    severity: ERROR
+    languages: [python]
+    pattern: pickle.loads(...)
+  - id: codegrinder-python-subprocess-shell
+    message: Use argument-vector subprocess calls; shell=True is prohibited.
+    severity: ERROR
+    languages: [python]
+    pattern: subprocess.run(..., shell=True, ...)
+  - id: codegrinder-python-requests-no-tls
+    message: Disabling TLS certificate verification is prohibited.
+    severity: ERROR
+    languages: [python]
+    pattern: requests.get(..., verify=False, ...)

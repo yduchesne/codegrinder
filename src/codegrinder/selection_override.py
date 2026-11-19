@@ -1,0 +1,269 @@
+"""Explicit PR selection and controlled, audited supersession.
+
+Never clean/reset/delete a worktree, reuse a branch for a forced restart, or
+ignore a possibly live worker. All operator choices are scoped by the
+workflow's existing single-runner lock.
+"""
+from __future__ import annotations
+
+import copy
+import hashlib
+import re
+
+from .recovery import process_status
+from .selection import is_completed
+
+
+class SelectionOverrideError(ValueError):
+    """Selection override is unsafe or violates the roadmap contract."""
+
+
+def selected_pr(config: dict, state: dict, pr_id: str, *, check_dependencies: bool = True) -> dict:
+    """Validate exact PR ID, completion, and direct dependency merge evidence."""
+    if not isinstance(pr_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", pr_id):
+        raise SelectionOverrideError("PR_SELECTION_INVALID_ID: use the exact roadmap PR ID (no spaces)")
+    matches = [pr for pr in config["prs"] if pr["id"] == pr_id]
+    if len(matches) != 1:
+        raise SelectionOverrideError(f"PR_SELECTION_NOT_FOUND: {pr_id}")
+    pr = matches[0]
+    entry = state["prs"].get(pr_id, {})
+    if is_completed(pr.get("status")) or is_completed(entry.get("stage")):
+        raise SelectionOverrideError(f"PR_ALREADY_COMPLETED: {pr_id}")
+    if check_dependencies:
+        for parent in pr["depends_on"]:
+            evidence = state["prs"].get(parent, {})
+            if not is_completed(evidence.get("stage")):
+                raise SelectionOverrideError(f"PR_DEPENDENCIES_UNSATISFIED: {pr_id} depends on {parent}")
+            if not (evidence.get("merged_at") and evidence.get("merge_commit")):
+                raise SelectionOverrideError(f"PR_DEPENDENCIES_UNVERIFIED: {parent}")
+    return pr
+
+
+def selection_conflicts(config: dict, state: dict, selected_id: str) -> list[dict]:
+    """Find evidence requiring recovery or explicit supersession before selection."""
+    conflicts: list[dict] = []
+    known = {pr["id"] for pr in config["prs"]}
+    for pid, ent in state["prs"].items():
+        if pid not in known:
+            raise SelectionOverrideError(f"PR_SELECTION_FOREIGN_STATE: {pid}")
+        if not isinstance(ent, dict):
+            raise SelectionOverrideError(f"PR_SELECTION_INVALID_STATE: {pid}")
+        if is_completed(ent.get("stage")):
+            continue
+        record = ent.get("execution")
+        status = record.get("status") if isinstance(record, dict) else None
+        stage = ent.get("stage", "PLAN")
+        if ent.get("superseded_by") and stage == "STOPPED" and status != "RUNNING":
+            continue
+        # An attempt that succeeded without moving beyond its own stage has
+        # ambiguous side effects; a direct --pr must never re-run it blindly.
+        stuck_after_success = (
+            isinstance(record, dict) and status in {"SUCCEEDED", "RECOVERED"}
+            and record.get("stage") == stage
+            and stage not in {"WAIT_MERGE", "STOPPED"}
+        )
+        legacy_unjournaled = status is None and stage not in {"PLAN", "DONE", "STOPPED"}
+        unresolved = (
+            status in {"RUNNING", "FAILED", "INTERRUPTED"} or
+            stage == "STOPPED" or legacy_unjournaled or stuck_after_success
+        )
+        # Only the selected PR may resume from a legitimate nonterminal stage.
+        busy_other = pid != selected_id and (stage != "PLAN" or status is not None)
+        if unresolved or busy_other:
+            conflicts.append({
+                "pr_id": pid, "stage": stage, "status": status or "UNRECORDED",
+                "attempt_id": record.get("id") if isinstance(record, dict) else None,
+                "recovery": unresolved,
+            })
+    return conflicts
+
+
+def override_warning(selected_id: str, conflicts: list[dict]) -> str:
+    problem = "RECOVERY_REQUIRED" if any(x["recovery"] for x in conflicts) else "PR_SELECTION_CONFLICT"
+    details = ", ".join(
+        f"{x['pr_id']} stage={x['stage']} status={x['status']} attempt={x['attempt_id'] or 'N/A'}"
+        for x in conflicts
+    )
+    return (
+        f"{problem}: requested {selected_id}; unfinished execution: {details}. "
+        f"Run 'grind run' to reconcile the existing workflow, or "
+        f"'grind run --pr {selected_id} -f' to request a controlled fresh PLAN. "
+        f"Force never bypasses active processes, dependencies or Git safety checks."
+    )
+
+
+def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
+    """Read-only preflight before any journal/state/branch mutation."""
+    from .engine import git
+    target = orch.state["prs"].get(pr_id, {})
+    # A previous PR on the same roadmap ID cannot be silently abandoned; it
+    # might still be open or may have been merged after our last checkpoint.
+    if (target.get("pr_number") or target.get("published_head") or
+            target.get("stage") in {"PUBLISH", "REVIEW", "WAIT_MERGE"}):
+        raise SelectionOverrideError(f"FORCE_EXISTING_TARGET_PR: {pr_id} requires GitHub reconciliation")
+    subjects = list(conflicts)
+    if isinstance(target.get("execution"), dict) and not any(
+        item["pr_id"] == pr_id for item in subjects
+    ):
+        subjects.append({"pr_id": pr_id})
+    for conflict in subjects:
+        pid = conflict["pr_id"]
+        entry = orch.state["prs"][pid]
+        record = entry.get("execution")
+        if not isinstance(record, dict):
+            # A legacy STOPPED/nonterminal entry has no process identity
+            # or attempt journal to prove that child processes exited.
+            # Only an untouched PLAN entry can be superseded without it.
+            if entry.get("stage") != "PLAN":
+                raise SelectionOverrideError(f"FORCE_LEGACY_STATE_UNSAFE: {pid}")
+            continue
+        status = record.get("status")
+        identity = record.get("process")
+        if identity is not None:
+            process = process_status(identity)
+            if process != "EXITED":
+                raise SelectionOverrideError(f"FORCE_PROCESS_{process}: {pid}")
+        if status not in {"RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED", "RECOVERED"}:
+            raise SelectionOverrideError(f"FORCE_STATUS_INVALID: {pid}")
+        if status == "RUNNING":
+            # Non-agent stages may have started untracked Git/GitHub or check
+            # subprocesses. A RUNNING record cannot prove their completion.
+            if record.get("stage") not in {"PLAN", "REPLAN", "CODE", "CODE_FIXUP", "REVIEW"}:
+                raise SelectionOverrideError(f"FORCE_UNTRACKED_PROCESS: {pid}")
+            if identity is None and record.get("launch_state") != "NOT_STARTED":
+                raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
+        # A terminal status alone does not prove the absence of a child
+        # process if the process was launched but its identity was not
+        # recorded. This applies to SUCCEEDED/RECOVERED as well as FAILED.
+        if identity is None and record.get("launch_state") in {
+            "LAUNCHING", "LAUNCHED",
+        }:
+            raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
+        # Every superseded invocation must have the corresponding durable
+        # audit record, not only those left with RUNNING status.
+        attempt_id = record.get("id")
+        if not isinstance(attempt_id, str) or not attempt_id.startswith(pid + "-"):
+            raise SelectionOverrideError(f"FORCE_JOURNAL_INVALID: {pid}")
+        path = orch._attempt_path(pid, attempt_id)
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 1024 * 1024:
+            raise SelectionOverrideError(f"FORCE_JOURNAL_INVALID: {pid}")
+        from .engine import load_json
+        audit = load_json(path)
+        if audit.get("id") != attempt_id or audit.get("stage") != record.get("stage"):
+            raise SelectionOverrideError(f"FORCE_JOURNAL_MISMATCH: {pid}")
+    # A target's old worktree may contain valuable partial edits. Force always
+    # creates a new worktree and branch, without touching any old worktree.
+    serial = orch.state.get("override_counter", 0)
+    if type(serial) is not int or serial < 0:
+        raise SelectionOverrideError("FORCE_COUNTER_INVALID")
+    # An existing canonical remote branch may represent a published PR
+    # even when its local checkpoint was lost. Never create a competing one.
+    if git(orch.repo, "ls-remote", "--heads", "origin", f"prflow/{pr_id}").strip():
+        raise SelectionOverrideError(f"FORCE_TARGET_REMOTE_BRANCH_PRESENT: {pr_id}")
+    # The previous generation may have used an already-forced branch name.
+    # If it exists remotely, we cannot assume its changes were never
+    # published merely because the local checkpoint has no PR number.
+    previous_branch = target.get("branch")
+    if previous_branch is not None:
+        if (not isinstance(previous_branch, str) or
+                not re.fullmatch(r"prflow/" + re.escape(pr_id) + r"-force-[0-9]{8}", previous_branch)):
+            raise SelectionOverrideError(f"FORCE_TARGET_BRANCH_INVALID: {pr_id}")
+        if git(orch.repo, "ls-remote", "--heads", "origin", previous_branch).strip():
+            raise SelectionOverrideError(f"FORCE_PREVIOUS_REMOTE_BRANCH_PRESENT: {pr_id}")
+    branch = f"prflow/{pr_id}-force-{serial + 1:08d}"
+    if git(orch.repo, "branch", "--list", branch).strip():
+        raise SelectionOverrideError(f"FORCE_BRANCH_EXISTS: {branch}")
+    if git(orch.repo, "ls-remote", "--heads", "origin", branch).strip():
+        raise SelectionOverrideError(f"FORCE_REMOTE_BRANCH_EXISTS: {branch}")
+    if (orch.state_dir / "worktrees" / f"{pr_id}-force-{serial + 1:08d}").exists():
+        raise SelectionOverrideError("FORCE_WORKTREE_EXISTS")
+
+
+def commit_force_selection(orch, pr_id: str, conflicts: list[dict]) -> None:
+    """Create audited supersession before launching a new selected PLAN.
+
+    The prior target state is saved as an immutable, digest-referenced snapshot;
+    journaled RUNNING attempts on other PRs become SUPERSEDED only after their
+    processes have been verified exited.
+    """
+    from .engine import atomic_json, utcnow
+    assess_force_safety(orch, pr_id, conflicts)
+    serial = orch.state.get("override_counter", 0) + 1
+    label = f"{pr_id}-force-{serial:08d}"
+    branch = f"prflow/{label}"
+    at = utcnow()
+    archive = orch.state_dir / "overrides" / pr_id / f"{serial:08d}.json"
+    prior_target = orch.state["prs"].get(pr_id)
+    if prior_target is not None:
+        atomic_json(archive, copy.deepcopy(prior_target))
+        archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
+    else:
+        archive_hash = None
+    superseded = [item["pr_id"] for item in conflicts]
+    if (isinstance(prior_target, dict) and (
+            prior_target.get("stage") not in {None, "PLAN"}
+            or prior_target.get("execution") is not None
+        ) and pr_id not in superseded):
+        superseded.append(pr_id)
+    metadata = {
+        "pr_id": pr_id, "generation": serial, "branch": branch,
+        "worktree_name": label, "at": at,
+        "prior_target_sha256": archive_hash,
+        "superseded_prs": superseded,
+    }
+    for conflict in conflicts:
+        pid = conflict["pr_id"]
+        if pid == pr_id:
+            continue
+        entry = orch.state["prs"][pid]
+        entry["superseded_by"] = metadata
+        entry["stopped_reason"] = "OPERATOR_FORCE_PR_SELECTION"
+        entry["stage"] = "STOPPED"
+        record = entry.get("execution")
+        if isinstance(record, dict) and record.get("status") == "RUNNING":
+            record["status"] = "SUPERSEDED"
+            record["superseded_at"] = at
+            record["superseded_by"] = metadata
+    previous_counter = prior_target.get("attempt_counter", 0) if isinstance(prior_target, dict) else 0
+    if type(previous_counter) is not int or previous_counter < 0:
+        raise SelectionOverrideError("FORCE_ATTEMPT_COUNTER_INVALID")
+    orch.state["prs"][pr_id] = {
+        "stage": "PLAN", "fixups": 0, "history": [],
+        "attempt_counter": previous_counter,
+        "branch": branch, "worktree_name": label, "artifacts_name": label,
+        "selection_override": metadata,
+    }
+    orch.state["override_counter"] = serial
+    orch.state.setdefault("override_events", []).append(metadata)
+    orch.save()
+    # The checkpoint is the authority after a crash. Per-attempt journals are
+    # reconciled after the atomic state commit; old data is never deleted.
+    for conflict in conflicts:
+        if conflict["pr_id"] == pr_id:
+            # The target has a new entry; retain the old attempt in its
+            # immutable archive AND mark the old attempt journal superseded.
+            previous = prior_target.get("execution") if isinstance(prior_target, dict) else None
+            if isinstance(previous, dict) and previous.get("status") == "RUNNING":
+                previous = copy.deepcopy(previous)
+                previous["status"] = "SUPERSEDED"
+                previous["superseded_at"] = at
+                previous["superseded_by"] = metadata
+                atomic_json(orch._attempt_path(pr_id, previous["id"]), previous)
+            continue
+        entry = orch.state["prs"][conflict["pr_id"]]
+        record = entry.get("execution")
+        if isinstance(record, dict) and record.get("status") == "SUPERSEDED":
+            atomic_json(orch._attempt_path(conflict["pr_id"], record["id"]), record)
+    orch.logs.emit(
+        "PR_SELECTION_OVERRIDE", pr_id=pr_id, state="PLAN",
+        disposition="SUCCEEDED",
+    )
+    orch.logs.emit(
+        "RECOVERY_OVERRIDE_APPROVED", pr_id=pr_id, state="PLAN",
+        disposition="SUCCEEDED",
+    )
+    if metadata["superseded_prs"]:
+        orch.logs.emit(
+            "ATTEMPT_SUPERSEDED", pr_id=pr_id, state="PLAN",
+            disposition="SUCCEEDED",
+        )

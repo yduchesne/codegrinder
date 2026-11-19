@@ -1,0 +1,10 @@
+{
+  "type": "object",
+  "properties": {
+    "status": {"type": "string", "enum": ["READY", "BLOCKED"]},
+    "blocker": {"type": "string"},
+    "plan_markdown": {"type": "string"}
+  },
+  "required": ["status", "blocker", "plan_markdown"],
+  "additionalProperties": false
+}

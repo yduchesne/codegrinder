@@ -1,0 +1,72 @@
+# Python bytecode and caches
+# uv.lock is deliberately tracked when generated (not ignored).
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Python virtual environments and build artifacts
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Local secrets and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# PRFlow/Codegrinder runtime (keep outside repo in normal operation)
+.prflow/
+.prflow-state/
+prflow-state/
+.local-state/
+pi-sessions/
+runner.lock
+
+# Runtime output and transient files
+*.log
+*.stdout
+*.stderr
+*.tmp
+*.swp
+*.swo
+*~
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local test / notebook artifacts
+.ipynb_checkpoints/
+
+# Codegrinder workspace, state and local execution artifacts
+.codegrinder/
+codegrinder-state/
+*.egg-info/
+
+# Per-project grind.toml is intentionally NOT ignored: it only contains
+# nonsecret adapter/model selections and may be committed for reproducibility.
+
+# Reproducibly generated SBOMs and local scan outputs (CI uploads artifacts)
+.artifacts/
+.semgrep/
