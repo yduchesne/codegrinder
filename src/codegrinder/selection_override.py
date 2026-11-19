@@ -118,6 +118,8 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
             process = process_status(identity)
             if process != "EXITED":
                 raise SelectionOverrideError(f"FORCE_PROCESS_{process}: {pid}")
+        if status not in {"RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED", "RECOVERED"}:
+            raise SelectionOverrideError(f"FORCE_STATUS_INVALID: {pid}")
         if status == "RUNNING":
             # Non-agent stages may have started untracked Git/GitHub or check
             # subprocesses. A RUNNING record cannot prove their completion.
@@ -129,16 +131,18 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
             "LAUNCHING", "LAUNCHED",
         }:
             raise SelectionOverrideError(f"FORCE_PROCESS_UNKNOWN: {pid}")
-            # Do not bypass an absent or corrupted recovery audit journal.
-            path = orch._attempt_path(pid, record.get("id", ""))
-            if not path.is_file() or path.is_symlink() or path.stat().st_size > 1024 * 1024:
-                raise SelectionOverrideError(f"FORCE_JOURNAL_INVALID: {pid}")
-            from .engine import load_json
-            audit = load_json(path)
-            if audit.get("id") != record.get("id") or audit.get("stage") != record.get("stage"):
-                raise SelectionOverrideError(f"FORCE_JOURNAL_MISMATCH: {pid}")
-        elif status not in {"SUCCEEDED", "FAILED", "INTERRUPTED", "RECOVERED", "SUPERSEDED"}:
-            raise SelectionOverrideError(f"FORCE_STATUS_INVALID: {pid}")
+        # Every superseded invocation must have the corresponding durable
+        # audit record, not only those left with RUNNING status.
+        attempt_id = record.get("id")
+        if not isinstance(attempt_id, str) or not attempt_id.startswith(pid + "-"):
+            raise SelectionOverrideError(f"FORCE_JOURNAL_INVALID: {pid}")
+        path = orch._attempt_path(pid, attempt_id)
+        if not path.is_file() or path.is_symlink() or path.stat().st_size > 1024 * 1024:
+            raise SelectionOverrideError(f"FORCE_JOURNAL_INVALID: {pid}")
+        from .engine import load_json
+        audit = load_json(path)
+        if audit.get("id") != attempt_id or audit.get("stage") != record.get("stage"):
+            raise SelectionOverrideError(f"FORCE_JOURNAL_MISMATCH: {pid}")
     # A target's old worktree may contain valuable partial edits. Force always
     # creates a new worktree and branch, without touching any old worktree.
     serial = orch.state.get("override_counter", 0)
