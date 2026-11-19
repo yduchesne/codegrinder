@@ -4,15 +4,30 @@ Codegrinder's `grind` CLI executes a PR roadmap. You can configure its plan/code
 
 ## Quick start
 
-From the target Git checkout, copy `grind.toml.example` to `grind.toml`, edit the roadmap and guide paths, and inspect the result before running:
+From **the target Git checkout**, create a `grind.toml` with the structure
+below, then edit the roadmap, guide, provider, and model paths. The
+[repository example](../grind.toml.example) is copyable **only if you have
+a Codegrinder source checkout**; an ordinary `uv tool install` does **not**
+copy `grind.toml.example` into every target repository.
 
 ```bash
-cp grind.toml.example grind.toml
+# Once the roadmap and authoring guide files exist in this checkout:
 grind explain
+# Run ONLY after verifying paths, exact models, GitHub access and required CI:
 grind run
 ```
 
-`grind explain` reads configuration and saved state but **does not** invoke agents, contact GitHub, change the worktree, or write logs/checkpoints. `grind run` requires a valid roadmap and authoring guide, both individually configured in TOML or supplied as CLI flags.
+Follow [Getting started](GETTING_STARTED.md) for complete, copy/pasteable
+roadmap and `grind.toml` creation examples, including a real CI-check gate.
+See [Installation](INSTALLATION.md#external-cli-installation-and-authentication)
+for Codex, Pi and GitHub authentication, and
+[Troubleshooting](TROUBLESHOOTING.md) for errors.
+
+`grind explain` reads configuration and saved state but **does not** invoke
+agents, contact GitHub, change the worktree, or write logs/checkpoints.
+`grind run` requires a valid roadmap and authoring guide, both individually
+configured in TOML or supplied as CLI flags, and initiates real agent and
+GitHub actions.
 
 ## Complete TOML structure
 
@@ -75,6 +90,28 @@ This is the structure currently accepted by `config.py`. Sections may be omitted
 | `[logging].directory` | Optional **log** root, with `_run/` and `<PR-ID>/` children | By default, workflow state directory's `logs/` |
 
 Both `logging.stdout` and `logging.files` can be enabled at once; disabling both is rejected. The directory setting changes **logs only**, not the persistent workflow checkpoint or attempt journal. Avoid storing credentials in the TOML file; configure agent authentication in Codex and Pi themselves. Model IDs are passed exactly to the harnesses and preflight-checked; Codegrinder does not auto-substitute another model.
+
+## External CLI models and credentials
+
+The default `codex` (planning/review) and `pi` (coding) adapter names
+and model IDs in this file are **values passed directly to those CLIs**.
+They may not be available to your account, or even to your installed
+harness version. Codegrinder never silently substitutes another model.
+Check and configure credentials **in the agent tools themselves**, not in
+the TOML file.
+
+| Step | Official CLI documentation | Configuration to verify |
+| --- | --- | --- |
+| Plan and review: `codex` | [Codex CLI](https://developers.openai.com/codex/cli/), [authentication](https://developers.openai.com/codex/auth/) | Exact model ID, reasoning effort, successful `codex login status` and model preflight |
+| Code: `pi` | [Pi CLI](https://docs.pi.dev/latest/cli), [providers](https://docs.pi.dev/latest/providers), [JSON event stream](https://docs.pi.dev/latest/json) | Provider and model IDs, thinking level, credentials, and support for Codegrinder's noninteractive `pi auth check` |
+| GitHub operations: `gh` | [GitHub CLI](https://cli.github.com/manual/), [authentication](https://cli.github.com/manual/gh_auth_login) | Account can push and query PRs on the target `origin` |
+
+In particular, Codegrinder's Pi preflight expects
+`pi auth check --provider <provider> --model <model> --json`.
+Do not assume that every upstream Pi distribution exposes this interface.
+Verify the installed harness version; an unsupported option is a
+compatibility issue, **not** a reason to bypass preflight. See
+[Troubleshooting: Pi CLI compatibility](TROUBLESHOOTING.md#pi-cli-compatibility-and-authentication).
 
 ## Configuration discovery, precedence, and overrides
 
