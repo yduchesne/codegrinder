@@ -96,10 +96,10 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
         entry = orch.state["prs"][pid]
         record = entry.get("execution")
         if not isinstance(record, dict):
-            if entry.get("stage") not in {"PLAN", "STOPPED", "WAIT_MERGE", "REVIEW", "REPLAN", "VERIFY", "CODE", "CODE_FIXUP"}:
-                raise SelectionOverrideError(f"FORCE_LEGACY_STATE_UNSAFE: {pid}")
-            # Legacy nonterminal state has no process identity or journal.
-            if entry.get("stage") not in {"PLAN", "STOPPED"}:
+            # A legacy STOPPED/nonterminal entry has no process identity
+            # or attempt journal to prove that child processes exited.
+            # Only an untouched PLAN entry can be superseded without it.
+            if entry.get("stage") != "PLAN":
                 raise SelectionOverrideError(f"FORCE_LEGACY_STATE_UNSAFE: {pid}")
             continue
         status = record.get("status")
