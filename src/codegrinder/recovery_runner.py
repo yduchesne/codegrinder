@@ -158,7 +158,7 @@ class RecoveryCoordinator:
         """Only adopt a uniquely confirmed published PR; never blindly recreate."""
         from .engine import git, run, StopWorkflow
         wt = self.c.wt(pid)
-        branch = f"prflow/{pid}"
+        branch = self.c._branch(pid)
         try:
             if git(wt, "branch", "--show-current") != branch:
                 self.block(pid, "RECOVERY_WRONG_BRANCH")
