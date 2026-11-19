@@ -135,6 +135,35 @@ two separate validation gates. Refer to the
 [GitHub CLI PR checks reference](https://cli.github.com/manual/gh_pr_checks)
 and the target repository's CI workflow.
 
+## Explicit PR selection and forced restart
+
+`grind run --pr BM-15` selects only BM-15 from the roadmap.
+The exact PR ID is required: `"PR 15"` (with spaces) is invalid.
+`--force` requires `--pr`.
+
+| Warning or error | Meaning and response |
+| --- | --- |
+| `RECOVERY_REQUIRED` | An existing PR has an unresolved attempt. Prefer normal `grind run` to reconcile it. To request a new plan for a different PR, use `--pr ID -f`, subject to safety checks |
+| `PR_SELECTION_CONFLICT` | Another PR is unfinished (perhaps legitimately at `WAIT_MERGE`). Inspect its PR and CI; do not treat it as a crash |
+| `PR_SELECTION_NOT_FOUND` / `PR_SELECTION_INVALID_ID` | The identifier is missing or does not match the roadmap's exact PR ID |
+| `PR_DEPENDENCIES_UNSATISFIED` / `PR_DEPENDENCIES_UNVERIFIED` | Required predecessor not yet verified merged. Neither `--pr` nor `--force` bypasses it |
+| `FORCE_PROCESS_ACTIVE` / `FORCE_PROCESS_UNKNOWN` | Earlier agent might still be operating. Stop; never run two writers to the same workflow |
+| `FORCE_UNTRACKED_PROCESS` / `FORCE_JOURNAL_INVALID` | Previous Git/GitHub operation or missing journal cannot safely be superseded. Reconcile manually |
+| `FORCE_EXISTING_TARGET_PR` | Target PR was already published; inspect and reconcile its GitHub PR rather than creating a competing PR |
+| `FORCE_BRANCH_EXISTS` / `FORCE_REMOTE_BRANCH_EXISTS` / `FORCE_WORKTREE_EXISTS` | Candidate isolated restart name is already in use; do not delete existing evidence to bypass this safeguard |
+
+When forced planning is authorized, the old attempt remains auditable
+and the target is re-planned on an isolated
+`prflow/<PR-ID>-force-<generation>` branch. Logs, old worktrees, source
+edits and previous PR artifacts are not reset or discarded. A previously
+unfinished different PR is retained as `STOPPED` with a supersession
+marker and must not be mistaken for completed work.
+
+`grind explain` displays the most recent stored selection override and
+its generated branch. It deliberately reports the force safety evaluation
+as **not evaluated offline**, since reliable process/Git checks require
+the exclusive run lock and live validation.
+
 ## Crash recovery and concurrent execution
 
 The state root is normally
