@@ -171,6 +171,32 @@ class TestSelectionOverride(unittest.TestCase):
         self.assertEqual("prflow/PR-001-force-00000002", self.worker._branch("PR-001"))
         self.assertTrue((self.state / "overrides" / "PR-001" / "00000002.json").exists())
 
+    def test_persisted_forced_workspace_paths_are_strictly_validated(self):
+        entry = self.worker.entry("PR-001")
+        for payload in (
+            {"branch": "prflow/PR-001-force-00000001", "worktree_name": "../outside",
+             "artifacts_name": "../outside"},
+            {"branch": "prflow/PR-001-force-00000001", "worktree_name": "PR-001-force-00000001",
+             "artifacts_name": "../../escape"},
+            {"branch": "prflow/another", "worktree_name": "PR-001-force-00000001",
+             "artifacts_name": "PR-001-force-00000001"},
+        ):
+            with self.subTest(payload=payload):
+                entry.update(payload)
+                with self.assertRaisesRegex(engine.StopWorkflow, "WORKFLOW_OVERRIDE_PATH_INVALID"):
+                    self.worker.artifact("PR-001")
+                with self.assertRaisesRegex(engine.StopWorkflow, "WORKFLOW_OVERRIDE_PATH_INVALID"):
+                    self.worker.wt("PR-001")
+                with self.assertRaisesRegex(engine.StopWorkflow, "WORKFLOW_OVERRIDE_PATH_INVALID"):
+                    self.worker._branch("PR-001")
+        entry.update({
+            "branch": "prflow/PR-001-force-00000002",
+            "worktree_name": "PR-001-force-00000002",
+            "artifacts_name": "PR-001-force-00000002",
+        })
+        self.assertEqual(self.state / "worktrees" / "PR-001-force-00000002",
+                         self.worker.wt("PR-001"))
+
     def test_active_or_unknown_prior_worker_cannot_be_forced(self):
         for state in ("ACTIVE", "UNKNOWN"):
             with self.subTest(process=state):
