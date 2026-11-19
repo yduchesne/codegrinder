@@ -210,6 +210,28 @@ class TestExplain(unittest.TestCase):
         self.assertIn("Failure category: N/A", output)
         self.assertEqual(prior, (self.state / "state.json").read_bytes())
 
+    def test_explain_shows_saved_force_pr_selection_without_claiming_safety(self):
+        self.saved({
+            "PR-001": {"stage": "STOPPED", "superseded_by": {"pr_id": "PR-002"}},
+            "PR-002": {"stage": "PLAN"},
+        }, changes={
+            "override_counter": 1,
+            "override_events": [{
+                "pr_id": "PR-002", "generation": 1,
+                "branch": "prflow/PR-002-force-00000001",
+                "worktree_name": "PR-002-force-00000001",
+                "at": "2026-11-18T00:00:00Z",
+                "prior_target_sha256": None, "superseded_prs": ["PR-001"],
+            }],
+        })
+        before = (self.state / "state.json").read_bytes()
+        output = self.run_explain()
+        self.assertIn("Last PR selection override: PR-002", output)
+        self.assertIn("Forced branch: prflow/PR-002-force-00000001", output)
+        self.assertIn("Superseded PRs: PR-001", output)
+        self.assertIn("Force safety: NOT_EVALUATED", output)
+        self.assertEqual(before, (self.state / "state.json").read_bytes())
+
     def test_invalid_saved_step_result_stops_offline_selection(self):
         self.saved({"PR-001": {
             "stage": "REVIEW",
