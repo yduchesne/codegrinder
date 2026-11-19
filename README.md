@@ -47,6 +47,8 @@ grind --help                 # Root help and command hierarchy
 grind run --help             # Run-specific flags and help
 
 grind run                         # Use [plan.guide] / [plan.roadmap] in ./grind.toml
+grind run --pr BM-15              # Execute only BM-15 if no conflicting unfinished work
+grind run --pr BM-15 -f           # Request safe supersession and fresh BM-15 planning
 
 grind run \
   --guide docs/DETAILED_PR_PLAN_AUTHORING_GUIDE.md \
@@ -61,6 +63,24 @@ grind run --conf /path/to/project-agents.toml -g guide.md -r roadmap.md
 ```
 
 `run` processes the entire ordered roadmap, automatically resuming the next incomplete PR. Paths are resolved independently: `-g` / `--guide` overrides `[plan.guide].path`, while `-r` / `--roadmap` overrides `[plan.roadmap].path`. If a flag is absent, its corresponding TOML path is used; if neither is defined, `grind run` stops with an actionable error. Both CLI paths and TOML paths resolve relative to the current working directory when relative; absolute paths are used as supplied (both accept `~` expansion). The `--conf` file can be located anywhere: its directory does **not** change the base for `[plan.roadmap].path` or `[plan.guide].path`. The roadmap must use the *strict versioned Markdown format* shown in [`examples/roadmap.v1.md`](examples/roadmap.v1.md), not an unstructured prose roadmap.
+
+### PR selection and forced planning
+
+`grind run` preserves automatic crash recovery and runs the normal
+dependency-ordered roadmap. With `--pr`, you can select **one exact**
+roadmap PR ID, e.g. `grind run --pr BM-15`. PR IDs cannot contain spaces;
+`"PR 15"` is invalid. The command stops after that PR merges.
+
+If unfinished or ambiguous work is found, explicit selection stops with
+a recovery or selection-conflict warning rather than silently resuming
+an unrelated PR. `grind run --pr BM-15 -f` requests controlled
+supersession and **new planning** for BM-15, but does not override active
+worker safety, unresolved publishing, dependency checks, or an existing
+published target PR. Previous files, journals and Git history remain intact;
+the new run receives a unique branch and worktree. `-f` alone is invalid.
+
+See [Architecture: explicit PR selection](docs/ARCHITECTURE.md#explicit-pr-selection-and-controlled-forced-planning)
+and [Configuration](docs/CONFIGURATION.md#explicit-pr-selection-and-recovery-override).
 
 ## Inspect configuration and workflow progress
 
