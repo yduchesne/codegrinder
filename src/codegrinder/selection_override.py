@@ -181,11 +181,17 @@ def commit_force_selection(orch, pr_id: str, conflicts: list[dict]) -> None:
         archive_hash = hashlib.sha256(archive.read_bytes()).hexdigest()
     else:
         archive_hash = None
+    superseded = [item["pr_id"] for item in conflicts]
+    if (isinstance(prior_target, dict) and (
+            prior_target.get("stage") not in {None, "PLAN"}
+            or prior_target.get("execution") is not None
+        ) and pr_id not in superseded):
+        superseded.append(pr_id)
     metadata = {
         "pr_id": pr_id, "generation": serial, "branch": branch,
         "worktree_name": label, "at": at,
         "prior_target_sha256": archive_hash,
-        "superseded_prs": [item["pr_id"] for item in conflicts],
+        "superseded_prs": superseded,
     }
     for conflict in conflicts:
         pid = conflict["pr_id"]
@@ -238,7 +244,7 @@ def commit_force_selection(orch, pr_id: str, conflicts: list[dict]) -> None:
         "RECOVERY_OVERRIDE_APPROVED", pr_id=pr_id, state="PLAN",
         disposition="SUCCEEDED",
     )
-    if conflicts:
+    if metadata["superseded_prs"]:
         orch.logs.emit(
             "ATTEMPT_SUPERSEDED", pr_id=pr_id, state="PLAN",
             disposition="SUCCEEDED",
