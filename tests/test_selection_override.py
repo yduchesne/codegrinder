@@ -253,6 +253,39 @@ class TestSelectionOverride(unittest.TestCase):
         with self.assertRaisesRegex(SelectionOverrideError, "FORCE_PROCESS_UNKNOWN"):
             assess_force_safety(self.worker, "PR-003", issues)
 
+    def test_terminal_succeeded_record_without_launched_process_identity_is_unsafe(self):
+        record = self.active(status="SUCCEEDED", launched=True)
+        record["process"] = None
+        self.worker._save_attempt("PR-001")
+        issues = selection_conflicts(self.worker.config, self.worker.state, "PR-003")
+        with patch("codegrinder.engine.git") as git:
+            with self.assertRaisesRegex(SelectionOverrideError, "FORCE_PROCESS_UNKNOWN"):
+                assess_force_safety(self.worker, "PR-003", issues)
+            git.assert_not_called()
+
+    def test_previous_forced_target_remote_branch_blocks_new_force(self):
+        target = self.worker.entry("PR-001")
+        target.update({
+            "stage": "CODE",
+            "branch": "prflow/PR-001-force-00000001",
+            "worktree_name": "PR-001-force-00000001",
+            "artifacts_name": "PR-001-force-00000001",
+        })
+        self.worker.save()
+
+        def remote(_repo, *args):
+            if args[:3] == ("ls-remote", "--heads", "origin") and (
+                args[3] == "prflow/PR-001-force-00000001"
+            ):
+                return "abc123\\trefs/heads/prflow/PR-001-force-00000001"
+            return ""
+
+        with patch("codegrinder.engine.git", side_effect=remote):
+            with self.assertRaisesRegex(
+                SelectionOverrideError, "FORCE_PREVIOUS_REMOTE_BRANCH_PRESENT"
+            ):
+                assess_force_safety(self.worker, "PR-001", [])
+
     def test_unknown_launch_and_untracked_publish_are_not_forceable(self):
         record = self.active(launched=True)
         record["process"] = None
