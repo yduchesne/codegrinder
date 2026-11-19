@@ -27,7 +27,7 @@ class WorkflowContext:
 class Orchestrator(Protocol):
     """Public contract for an executable, resumable roadmap workflow."""
 
-    def run(self) -> int: ...
+    def run(self, *, pr_id: str | None = None, force: bool = False) -> int: ...
 
 
 class AgentExecutionError(RuntimeError):
