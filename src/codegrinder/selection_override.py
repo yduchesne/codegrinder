@@ -9,7 +9,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import re
-from pathlib import Path
 
 from .recovery import process_status
 from .selection import is_completed
