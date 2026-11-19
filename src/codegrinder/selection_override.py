@@ -55,7 +55,8 @@ def selection_conflicts(config: dict, state: dict, selected_id: str) -> list[dic
         stage = ent.get("stage", "PLAN")
         # Reached a durable terminal stage, with no attempt to recover, or an
         # attempt that failed before its state was advanced.
-        unresolved = status in {"RUNNING", "FAILED"} or stage == "STOPPED"
+        legacy_unjournaled = status is None and stage not in {"PLAN", "DONE", "STOPPED"}
+        unresolved = status in {"RUNNING", "FAILED"} or stage == "STOPPED" or legacy_unjournaled
         # Only the selected PR may resume from a legitimate nonterminal stage.
         busy_other = pid != selected_id and (stage != "PLAN" or status is not None)
         if unresolved or busy_other:
@@ -87,7 +88,8 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
     target = orch.state["prs"].get(pr_id, {})
     # A previous PR on the same roadmap ID cannot be silently abandoned; it
     # might still be open or may have been merged after our last checkpoint.
-    if target.get("pr_number") or target.get("published_head"):
+    if (target.get("pr_number") or target.get("published_head") or
+            target.get("stage") in {"PUBLISH", "REVIEW", "WAIT_MERGE"}):
         raise SelectionOverrideError(f"FORCE_EXISTING_TARGET_PR: {pr_id} requires GitHub reconciliation")
     for conflict in conflicts:
         pid = conflict["pr_id"]
