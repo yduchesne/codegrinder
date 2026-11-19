@@ -131,6 +131,10 @@ def assess_force_safety(orch, pr_id: str, conflicts: list[dict]) -> None:
     serial = orch.state.get("override_counter", 0)
     if type(serial) is not int or serial < 0:
         raise SelectionOverrideError("FORCE_COUNTER_INVALID")
+    # An existing canonical remote branch may represent a published PR
+    # even when its local checkpoint was lost. Never create a competing one.
+    if git(orch.repo, "ls-remote", "--heads", "origin", f"prflow/{pr_id}").strip():
+        raise SelectionOverrideError(f"FORCE_TARGET_REMOTE_BRANCH_PRESENT: {pr_id}")
     branch = f"prflow/{pr_id}-force-{serial + 1:08d}"
     if git(orch.repo, "branch", "--list", branch).strip():
         raise SelectionOverrideError(f"FORCE_BRANCH_EXISTS: {branch}")
