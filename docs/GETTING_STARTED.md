@@ -264,6 +264,39 @@ If the terminal was interrupted, use `grind explain` and the recovery
 instructions before restarting; do not delete `state.json` or
 `runner.lock` to force progress.
 
+## Optional: select one PR or request a controlled fresh plan
+
+Normal `grind run` reconciles interrupted attempts and processes the roadmap
+in dependency order. To run only a particular PR, supply its **exact**
+roadmap ID:
+
+```bash
+grind run --pr PR-001
+```
+
+A roadmap PR ID cannot contain spaces (`"PR 15"` is invalid). If an
+unfinished PR or interrupted attempt is present, this selection may stop
+with `RECOVERY_REQUIRED` or `PR_SELECTION_CONFLICT`. You can resume
+the old workflow with normal `grind run`, or **request** fresh planning
+for the explicitly selected PR:
+
+```bash
+grind run --pr PR-001 --force
+# Equivalent:
+grind run --pr PR-001 -f
+```
+
+Force never means an unconditional retry. It refuses active or unknown
+previous worker processes, missing recovery evidence, conflicting remote
+PRs, unmerged dependencies and other unsafe states. If accepted, it
+preserves the old worktree, artifacts and execution journal, and creates
+a uniquely named branch/worktree for a new PLAN. Inspect the prior PR
+and review any superseded code manually. `grind explain` reports saved
+override history but cannot itself verify whether force is safe.
+
+See [Architecture](ARCHITECTURE.md#explicit-pr-selection-and-controlled-forced-planning)
+for the full decision table.
+
 ## 7. Find artifacts and decide what to do next
 
 `grind explain` prints the workflow state path. By default, checkpoint
