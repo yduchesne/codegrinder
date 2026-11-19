@@ -118,7 +118,7 @@ def validate_attempt(record: object, pid: str) -> dict:
     """Reject corrupt/foreign/malformed saved attempt evidence before recovery."""
     if not isinstance(record, dict) or record.get("pr_id") != pid:
         raise RecoveryError("RECOVERY_ATTEMPT_INVALID")
-    if record.get("status") not in {"RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED", "RECOVERED"}:
+    if record.get("status") not in {"RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED", "RECOVERED", "SUPERSEDED"}:
         raise RecoveryError("RECOVERY_STATUS_INVALID")
     if not isinstance(record.get("stage"), str):
         raise RecoveryError("RECOVERY_STAGE_INVALID")
