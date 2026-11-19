@@ -19,7 +19,7 @@ class SelectionOverrideError(ValueError):
     """Selection override is unsafe or violates the roadmap contract."""
 
 
-def selected_pr(config: dict, state: dict, pr_id: str) -> dict:
+def selected_pr(config: dict, state: dict, pr_id: str, *, check_dependencies: bool = True) -> dict:
     """Validate exact PR ID, completion, and direct dependency merge evidence."""
     if not isinstance(pr_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", pr_id):
         raise SelectionOverrideError("PR_SELECTION_INVALID_ID: use the exact roadmap PR ID (no spaces)")
@@ -30,12 +30,13 @@ def selected_pr(config: dict, state: dict, pr_id: str) -> dict:
     entry = state["prs"].get(pr_id, {})
     if is_completed(pr.get("status")) or is_completed(entry.get("stage")):
         raise SelectionOverrideError(f"PR_ALREADY_COMPLETED: {pr_id}")
-    for parent in pr["depends_on"]:
-        evidence = state["prs"].get(parent, {})
-        if not is_completed(evidence.get("stage")):
-            raise SelectionOverrideError(f"PR_DEPENDENCIES_UNSATISFIED: {pr_id} depends on {parent}")
-        if not (evidence.get("merged_at") and evidence.get("merge_commit")):
-            raise SelectionOverrideError(f"PR_DEPENDENCIES_UNVERIFIED: {parent}")
+    if check_dependencies:
+        for parent in pr["depends_on"]:
+            evidence = state["prs"].get(parent, {})
+            if not is_completed(evidence.get("stage")):
+                raise SelectionOverrideError(f"PR_DEPENDENCIES_UNSATISFIED: {pr_id} depends on {parent}")
+            if not (evidence.get("merged_at") and evidence.get("merge_commit")):
+                raise SelectionOverrideError(f"PR_DEPENDENCIES_UNVERIFIED: {parent}")
     return pr
 
 
