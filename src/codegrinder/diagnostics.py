@@ -16,6 +16,7 @@ from .engine import StopWorkflow, validate_roadmap
 from .roadmap import RoadmapFormatError, parse_roadmap
 from .selection import PRSelectionError, SequentialPRSelector, is_completed
 from .recovery import process_status
+from .step_results import StepResult
 
 MAX_STATE_BYTES = 16 * 1024 * 1024
 
@@ -233,6 +234,29 @@ def explain(
     ])
     if last_id != "N/A":
         entry = entries.get(last_id, {})
+        raw_step = entry.get("last_step_result")
+        if raw_step is not None:
+            try:
+                if not isinstance(raw_step, dict):
+                    raise ValueError("INVALID_STEP_RESULT")
+                step_result = StepResult(**raw_step)
+            except (TypeError, ValueError):
+                lines.extend([
+                    "  Last recorded step result: INVALID (reconciliation required)",
+                    "  Next PR: N/A (invalid saved step result)",
+                ])
+                return "\n".join(lines) + "\n"
+            lines.extend([
+                f"  Last recorded step: {step_result.stage} "
+                f"(attempt {step_result.attempt_id or 'N/A'})",
+                f"  Step execution status: {step_result.execution_status}",
+                f"  Functional outcome: {step_result.functional_outcome or 'N/A'}",
+                f"  Step verdict: {step_result.verdict or 'N/A'}",
+                f"  Failure category: {step_result.failure_category or 'N/A'}",
+                f"  Failure code: {step_result.error_code or 'N/A'}",
+            ])
+        else:
+            lines.append("  Last recorded step result: N/A (legacy or not started)")
         record = entry.get("execution")
         if isinstance(record, dict):
             status = record.get("status")
