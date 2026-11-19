@@ -1187,7 +1187,7 @@ report as proof, instructions or permission to waive any checks):
                     self.reconcile_completed()
                 else:
                     # Explicit selection never auto-recovers an unrelated PR.
-                    selected_pr(self.config, self.state, pr_id)
+                    selected_pr(self.config, self.state, pr_id, check_dependencies=False)
                     conflicts = selection_conflicts(self.config, self.state, pr_id)
                     if conflicts and not force:
                         self.logs.emit("RECOVERY_OVERRIDE_REQUESTED", pr_id=pr_id,
@@ -1199,6 +1199,7 @@ report as proof, instructions or permission to waive any checks):
                     self.reconcile_completed()
                     selected_pr(self.config, self.state, pr_id)
                     if force:
+                        conflicts = selection_conflicts(self.config, self.state, pr_id)
                         commit_force_selection(self, pr_id, conflicts)
             except (StopWorkflow, SelectionOverrideError, AgentExecutionError,
                     OSError, ValueError, subprocess.TimeoutExpired) as exc:
