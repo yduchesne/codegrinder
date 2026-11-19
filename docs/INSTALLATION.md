@@ -19,6 +19,85 @@ For `grind run`, the `gh`, `codex`, and `pi` CLIs must be separately installed, 
 
 The workflow's process-recovery logic is Linux-oriented; do not assume that unattended execution has been validated on Windows or macOS merely because `uv` can install the package there.
 
+## External CLI installation and authentication
+
+Codegrinder's `uv` package install supplies **only** the `grind` command.
+The external programs must be installed independently **on the same Linux host
+where `grind run` executes**. The following references are maintained by
+their respective publishers.
+
+| CLI | Installation / reference | Authentication and verification |
+| --- | --- | --- |
+| `uv` | [Astral installation](https://docs.astral.sh/uv/getting-started/installation/), [tool usage](https://docs.astral.sh/uv/guides/tools/) | `uv --version`, `uv tool list`, `uv tool dir --bin` |
+| `git` | [Installing Git](https://git-scm.com/book/en/v2/Getting-Started-Installing-Git), [Git commands](https://git-scm.com/docs) | `git --version`, `git remote -v` from a clone |
+| `gh` | [GitHub CLI manual](https://cli.github.com/manual/), [installation](https://github.com/cli/cli#installation) | `gh auth login`, `gh auth status`; [official auth guide](https://cli.github.com/manual/gh_auth_login) |
+| `codex` | [Codex CLI documentation](https://developers.openai.com/codex/cli/), [official CLI repository](https://github.com/openai/codex) | `codex login`, `codex login status`; [authentication guide](https://developers.openai.com/codex/auth/) |
+| `pi` | [Pi quickstart](https://docs.pi.dev/latest/quickstart), [CLI reference](https://docs.pi.dev/latest/cli) | Run `pi` then `/login` and `/model`; [providers](https://docs.pi.dev/latest/providers) |
+
+### Install GitHub CLI, Codex CLI, and Pi
+
+Install Git and `gh` using the publisher's instructions for your Linux
+distribution. For Codex CLI, an officially supported installation is:
+
+```bash
+npm install -g @openai/codex
+codex --version
+codex login
+codex login status
+```
+
+You can instead use the standalone installation described by
+[OpenAI's Codex CLI repository](https://github.com/openai/codex).
+
+For Pi, the [current official Pi quickstart](https://docs.pi.dev/latest/quickstart)
+offers a standalone installer, or an npm installation (which requires a
+supported Node.js version):
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+pi --version
+pi
+```
+
+Within the interactive `pi` session, run `/login` and follow the
+provider's instructions; use `/model` to check which models you can
+actually access. For API-key providers such as DeepSeek, consult the
+[provider reference](https://docs.pi.dev/latest/providers) and configure
+credentials outside version control. The default Codegrinder model/provider
+IDs are **configuration examples**, not a guarantee of current model
+availability.
+
+**Pi compatibility boundary:** Codegrinder's current adapter invokes
+`pi auth check --provider <provider> --model <model> --json` during
+preflight. Upstream Pi builds may not expose this exact subcommand.
+Check the installed version's help and confirm compatibility *before*
+attempting a real roadmap; interactive Pi success alone does not establish
+noninteractive Codegrinder compatibility. The adapter deliberately fails
+closed rather than bypassing its authentication gate. See
+[Troubleshooting](TROUBLESHOOTING.md#pi-cli-compatibility-and-authentication).
+
+### Authenticate GitHub and verify permissions
+
+```bash
+gh auth login
+gh auth status
+```
+
+Within the target repository, run `gh repo view --json nameWithOwner` and
+`git remote -v`. Confirm that your account can push branches and open pull
+requests to the intended `origin`. Codegrinder cannot publish safely
+without those permissions.
+
+Do not store API tokens in `grind.toml`, the roadmap, shell command
+history, tracked files, or logs. Follow the upstream credential-store
+guidance. Authentication sessions and model IDs for Codex and Pi are
+independent from your GitHub CLI session.
+
+For the complete first-run sequence—creating a roadmap and guide, setting
+up models, explaining state, running a PR, and merging manually—read
+[Getting started](GETTING_STARTED.md). If any prerequisite fails, use
+[Troubleshooting](TROUBLESHOOTING.md).
+
 ## Install the CLI
 
 Once the current implementation has been merged into `main`, install it using:
